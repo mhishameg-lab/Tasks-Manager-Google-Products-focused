@@ -16,7 +16,7 @@ function processEmailEscalations_() {
   const escalations = getSheet_(APP.SHEETS.EMAIL_ESCALATIONS).getDataRange().getValues();
   let sentCount = 0;
   tasks.forEach(task => {
-    if (task[4] !== 'Pending' || !task[7]) return;
+    if (task[4] !== 'Pending' || task[5] !== 'High' || !task[7]) return;
     const due = new Date(`${dateKey_(task[7])}T00:00:00`);
     const hoursOverdue = Math.floor((now.getTime() - due.getTime()) / 3600000);
     if (hoursOverdue < thresholdHours) return;

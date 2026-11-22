@@ -178,6 +178,20 @@ function postponeGoogleTask_(googleTaskId, newDueDate) {
   });
 }
 
+function reduceGoogleTask_(googleTaskId, newTitle) {
+  return withSyncLock_(() => {
+    const title = String(newTitle || '').trim();
+    if (!title || title.length > 500) throw new Error('Reduced task title is required and must be 500 characters or fewer.');
+    const previous = getTaskRecordByGoogleId_(googleTaskId);
+    if (!previous || previous[4] !== 'Pending') throw new Error('Only pending tasks can have their scope reduced.');
+    if (title === String(previous[2])) throw new Error('Enter a smaller or clearer task title.');
+    const task = retryTransient_(() => Tasks.Tasks.patch({ title: title }, getProductivityTaskListId_(), googleTaskId), 3);
+    upsertTaskFromGoogle_(task, 'Telegram', 'Scope reduced');
+    logTaskHistory_(previous[0], previous[4], previous[4], previous[7], previous[7], 'Scope reduced', 'Telegram');
+    return task;
+  });
+}
+
 function cancelGoogleTask_(googleTaskId) {
   return withSyncLock_(() => {
     const previous = getTaskRecordByGoogleId_(googleTaskId);

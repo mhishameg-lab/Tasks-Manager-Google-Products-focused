@@ -1,0 +1,151 @@
+<!doctype html>
+<html>
+  <head>
+    <base target="_top">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+      :root { color-scheme: light dark; --accent: var(--tg-theme-button-color, #3674a8); --muted: var(--tg-theme-hint-color, #718096); --surface: var(--tg-theme-secondary-bg-color, #f3f5f7); }
+      * { box-sizing: border-box; }
+      body { margin: 0; padding: 18px 16px 30px; background: var(--tg-theme-bg-color, #fff); color: var(--tg-theme-text-color, #17212b); font: 16px/1.45 system-ui, sans-serif; }
+      h1 { margin: 0 0 4px; font-size: 23px; }
+      .sub { margin: 0 0 20px; color: var(--muted); font-size: 14px; }
+      label { display: block; margin: 14px 0 6px; font-size: 14px; font-weight: 650; }
+      input, select, textarea { width: 100%; min-height: 46px; border: 1px solid var(--tg-theme-hint-color, #c8d0d8); border-radius: 11px; padding: 10px 12px; background: var(--tg-theme-bg-color, #fff); color: var(--tg-theme-text-color, #17212b); font: inherit; }
+      textarea { min-height: 76px; resize: vertical; }
+      .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+      .toggle { display: flex; align-items: center; gap: 10px; margin: 14px 0; padding: 12px; border-radius: 12px; background: var(--surface); }
+      .toggle input { width: 20px; min-height: 20px; margin: 0; accent-color: var(--accent); }
+      .toggle label { margin: 0; font-weight: 550; }
+      #blockFields[hidden] { display: none; }
+      button { width: 100%; min-height: 48px; margin-top: 20px; border: 0; border-radius: 12px; background: var(--accent); color: var(--tg-theme-button-text-color, #fff); font: 650 16px system-ui, sans-serif; }
+      button:disabled { opacity: .6; }
+      #status { min-height: 24px; margin-top: 12px; color: var(--muted); font-size: 14px; }
+      #status.error { color: #d04444; }
+      .note { margin-top: 18px; color: var(--muted); font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <h1>Add something</h1>
+    <p class="sub">Capture the next useful action. You can decide when to do it.</p>
+    <form id="taskForm">
+      <label for="title">Task title <span aria-hidden="true">*</span></label>
+      <input id="title" name="title" required maxlength="500" autocomplete="off" placeholder="What is the next action?">
+      <div class="row">
+        <div>
+          <label for="area">Area</label>
+          <select id="area" name="area">
+            <option>DEEP</option><option>WORK</option><option>LIFE</option><option>Admin</option><option>Other</option>
+          </select>
+        </div>
+        <div>
+          <label for="priority">Priority</label>
+          <select id="priority" name="priority">
+            <option>Medium</option><option>High</option><option>Low</option>
+          </select>
+        </div>
+      </div>
+      <label for="dueDate">Due date</label>
+      <input id="dueDate" name="dueDate" type="date">
+      <div class="toggle">
+        <input id="addToTop3" name="addToTop3" type="checkbox">
+        <label for="addToTop3">Make this today’s DEEP / WORK / LIFE outcome (sets today as due date if blank)</label>
+      </div>
+      <div class="toggle">
+        <input id="createCalendarBlock" name="createCalendarBlock" type="checkbox">
+        <label for="createCalendarBlock">Create a Calendar block (I’ll confirm the preview)</label>
+      </div>
+      <div id="blockFields" hidden>
+        <div class="row">
+          <div><label for="blockDate">Block date</label><input id="blockDate" type="date"></div>
+          <div><label for="blockStartTime">Start time</label><input id="blockStartTime" type="time"></div>
+        </div>
+        <label for="blockEndTime">End time</label>
+        <input id="blockEndTime" type="time">
+      </div>
+      <label for="doneTest">What would count as done?</label>
+      <textarea id="doneTest" name="doneTest" maxlength="1000" placeholder="A visible result you can point to"></textarea>
+      <label for="notes">Notes</label>
+      <textarea id="notes" name="notes" maxlength="2000" placeholder="Optional context"></textarea>
+      <button id="submit" type="submit">Add task</button>
+      <div id="status" role="status" aria-live="polite"></div>
+    </form>
+    <p class="note">Google Tasks stores the action. Calendar is changed only after you confirm its preview in the chat.</p>
+    <script>
+      const app = window.Telegram && window.Telegram.WebApp;
+      if (app) { app.ready(); app.expand(); }
+      const form = document.getElementById('taskForm');
+      const calendarToggle = document.getElementById('createCalendarBlock');
+      const blockFields = document.getElementById('blockFields');
+      const addTop3 = document.getElementById('addToTop3');
+      const area = document.getElementById('area');
+      const status = document.getElementById('status');
+      const submit = document.getElementById('submit');
+      let lastRequestSignature = '';
+      let lastRequestId = '';
+      calendarToggle.addEventListener('change', () => { blockFields.hidden = !calendarToggle.checked; });
+      addTop3.addEventListener('change', () => {
+        if (addTop3.checked && !['DEEP', 'WORK', 'LIFE'].includes(area.value)) area.value = 'LIFE';
+      });
+      area.addEventListener('change', () => {
+        if (!['DEEP', 'WORK', 'LIFE'].includes(area.value)) addTop3.checked = false;
+      });
+      function showStatus(message, isError) {
+        status.textContent = message;
+        status.classList.toggle('error', Boolean(isError));
+      }
+      form.addEventListener('submit', event => {
+        event.preventDefault();
+        if (!app || !app.initData) {
+          showStatus('Telegram did not provide secure launch data. Close this page and reopen it using Add something in the bot’s private chat.', true);
+          return;
+        }
+        const blockDate = document.getElementById('blockDate').value;
+        const startTime = document.getElementById('blockStartTime').value;
+        const endTime = document.getElementById('blockEndTime').value;
+        if (calendarToggle.checked && (!blockDate || !startTime || !endTime)) {
+          showStatus('Choose the block date, start time, and end time.', true); return;
+        }
+        const payload = {
+          title: document.getElementById('title').value,
+          area: area.value,
+          priority: document.getElementById('priority').value,
+          dueDate: document.getElementById('dueDate').value,
+          doneTest: document.getElementById('doneTest').value,
+          notes: document.getElementById('notes').value,
+          addToTop3: addTop3.checked,
+          createCalendarBlock: calendarToggle.checked,
+          blockStart: blockDate && startTime ? `${blockDate}T${startTime}` : '',
+          blockEnd: blockDate && endTime ? `${blockDate}T${endTime}` : ''
+        };
+        const requestSignature = JSON.stringify(payload);
+        if (requestSignature !== lastRequestSignature) {
+          lastRequestSignature = requestSignature;
+          lastRequestId = window.crypto && typeof window.crypto.randomUUID === 'function'
+            ? window.crypto.randomUUID()
+            : `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+        }
+        payload.requestId = lastRequestId;
+        submit.disabled = true;
+        showStatus('Saving your task…', false);
+        google.script.run
+          .withSuccessHandler(result => {
+            const notificationFailed = result && result.notificationSent === false;
+            const message = notificationFailed
+              ? `Task saved, but the bot notification failed. No Calendar event was created. Reference: ${result.notificationReference || 'check System_Logs'}.`
+              : 'Task added. Check the bot chat for the Calendar confirmation, if selected.';
+            showStatus(message, Boolean(notificationFailed));
+            if (app.HapticFeedback) app.HapticFeedback.notificationOccurred('success');
+            submit.textContent = notificationFailed ? 'Saved' : 'Added';
+            if (!notificationFailed) setTimeout(() => app.close(), 900);
+          })
+          .withFailureHandler(error => {
+            submit.disabled = false;
+            showStatus(error && error.message ? error.message : 'Could not save this task. Please retry.', true);
+            if (app.HapticFeedback) app.HapticFeedback.notificationOccurred('error');
+          })
+          .submitTaskFromMiniApp(app.initData, payload);
+      });
+    </script>
+  </body>
+</html>

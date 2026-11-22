@@ -12,6 +12,21 @@ function setupDatabase() {
       'Escalation Status', 'Notes'
     ],
 
+    Daily_Outcomes: [
+      'Date', 'Area', 'Outcome', 'Done Test', 'Google Task ID', 'Status',
+      'Calendar Event ID', 'Time Block Start', 'Time Block End',
+      'Status Details', 'Updated At', 'Outcome Record ID'
+    ],
+
+    Review_Notes: [
+      'Note ID', 'Review Type', 'Review Date', 'Question', 'Answer',
+      'Related Area', 'Timestamp'
+    ],
+
+    MiniApp_Requests: [
+      'Request ID', 'Google Task ID', 'Created At', 'Status', 'Error Details'
+    ],
+
     Telegram_Messages: [
       'Message Log ID', 'Telegram Chat ID', 'Telegram Message ID',
       'Direction', 'Message Type', 'Message Category', 'Message Content',
@@ -164,10 +179,19 @@ function applyValidation_(sheet, headers) {
   const rowCount = Math.max(sheet.getMaxRows() - 1, 1);
   const indexOf = header => headers.indexOf(header) + 1;
   if (indexOf('Status')) {
+    const statusOptions = {
+      Tasks: ['Pending', 'Completed', 'Cancelled', 'Deleted'],
+      Daily_Outcomes: ['Planned', 'In progress', 'Completed', 'Partial', 'Blocked', 'Rescheduled', 'Dropped'],
+      MiniApp_Requests: ['Started', 'Created', 'Needs review'],
+      Accountability_Checkins: ['Completed', 'Missed', 'Not yet', 'Postponed']
+    };
     sheet.getRange(2, indexOf('Status'), rowCount, 1)
       .setDataValidation(
         SpreadsheetApp.newDataValidation()
-          .requireValueInList(['Pending', 'Completed', 'Cancelled', 'Deleted', 'Missed', 'Not yet', 'Postponed'])
+          .requireValueInList(statusOptions[sheet.getName()] || [
+            'Pending', 'Completed', 'Cancelled', 'Deleted', 'Missed', 'Not yet',
+            'Postponed', 'In progress', 'Partial', 'Blocked', 'Rescheduled', 'Dropped'
+          ])
           .setAllowInvalid(false)
           .build()
       );
@@ -177,6 +201,16 @@ function applyValidation_(sheet, headers) {
       .setDataValidation(
         SpreadsheetApp.newDataValidation()
           .requireValueInList(['High', 'Medium', 'Low'])
+          .setAllowInvalid(false)
+          .build()
+      );
+  }
+
+  if (indexOf('Area')) {
+    sheet.getRange(2, indexOf('Area'), rowCount, 1)
+      .setDataValidation(
+        SpreadsheetApp.newDataValidation()
+          .requireValueInList(['DEEP', 'WORK', 'LIFE', 'Admin', 'Other'])
           .setAllowInvalid(false)
           .build()
       );
@@ -204,6 +238,14 @@ function applyConditionalFormatting_(sheet, headers) {
       .whenTextEqualTo('Pending').setBackground('#FFF2CC').setRanges([range]).build());
     rules.push(SpreadsheetApp.newConditionalFormatRule()
       .whenTextEqualTo('Cancelled').setBackground('#E6E6E6').setRanges([range]).build());
+    ['Partial', 'Rescheduled', 'Reduced'].forEach(status => {
+      rules.push(SpreadsheetApp.newConditionalFormatRule()
+        .whenTextEqualTo(status).setBackground('#D9EAF7').setRanges([range]).build());
+    });
+    ['Blocked', 'Dropped', 'Missed', 'Needs review'].forEach(status => {
+      rules.push(SpreadsheetApp.newConditionalFormatRule()
+        .whenTextEqualTo(status).setBackground('#FCE5CD').setRanges([range]).build());
+    });
   }
   const dueColumn = headers.indexOf('Due Date') + 1;
   if (statusColumn && dueColumn) {
@@ -249,7 +291,11 @@ function seedSettings_() {
   const sheet = getSheet_(APP.SHEETS.SETTINGS);
   const rows = [
     ['TIMEZONE', 'Africa/Cairo', 'Timezone for all schedules', 'Core', now_()],
-    ['MORNING_REMINDER_TIME', '08:00', 'Morning briefing time', 'Reminder', now_()],
+    ['MORNING_REMINDER_TIME', '07:30', 'Morning briefing time', 'Reminder', now_()],
+    ['WORK_BRIEFING_TIME', '14:15', 'SDR pre-shift briefing time', 'Reminder', now_()],
+    ['EVENING_REVIEW_TIME', '22:30', 'Evening progress and accountability review time', 'Reminder', now_()],
+    ['SHUTDOWN_TIME', '23:00', 'Evening shutdown time', 'Reminder', now_()],
+    ['NEXT_DAY_PLANNING_TIME', '23:20', 'Guided next-day planning time', 'Planning', now_()],
     ['PLANNING_REMINDER_1', '00:00', 'Initial planning reminder', 'Planning', now_()],
     ['PLANNING_REMINDER_2', '00:20', 'Second planning reminder', 'Planning', now_()],
     ['PLANNING_REMINDER_3', '00:45', 'Final planning reminder', 'Planning', now_()],
@@ -257,11 +303,13 @@ function seedSettings_() {
     ['PLANNING_WINDOW_END', '01:00', 'End of midnight planning reminder window', 'Planning', now_()],
     ['MAX_REMINDERS', '3', 'Maximum reminders for a routine', 'Reminder', now_()],
     ['EMAIL_ESCALATION_HOURS', '24', 'Hours overdue before email escalation', 'Escalation', now_()],
-    ['TASK_COMPLETION_WEIGHT', '0.30', 'Accountability score weight', 'Scoring', now_()],
+    ['TASK_COMPLETION_WEIGHT', '0.20', 'Accountability score weight', 'Scoring', now_()],
     ['CALENDAR_ADHERENCE_WEIGHT', '0.15', 'Accountability score weight', 'Scoring', now_()],
-    ['TRELLO_WEIGHT', '0.20', 'Accountability score weight', 'Scoring', now_()],
-    ['OBSIDIAN_WEIGHT', '0.20', 'Accountability score weight', 'Scoring', now_()],
-    ['PLANNING_REVIEW_WEIGHT', '0.15', 'Accountability score weight', 'Scoring', now_()]
+    ['TRELLO_WEIGHT', '0.15', 'Accountability score weight', 'Scoring', now_()],
+    ['OBSIDIAN_WEIGHT', '0.15', 'Accountability score weight', 'Scoring', now_()],
+    ['PLANNING_REVIEW_WEIGHT', '0.15', 'Accountability score weight', 'Scoring', now_()],
+    ['OUTCOME_CLARITY_WEIGHT', '0.15', 'Accountability score weight', 'Scoring', now_()],
+    ['HONEST_RESCHEDULE_WEIGHT', '0.05', 'Accountability score weight', 'Scoring', now_()]
   ];
 
   const existing = new Set(sheet.getDataRange().getValues().slice(1).map(row => String(row[0])));
@@ -269,6 +317,27 @@ function seedSettings_() {
   if (missing.length) {
     sheet.getRange(sheet.getLastRow() + 1, 1, missing.length, missing[0].length).setValues(missing);
   }
+  const morningRow = sheet.getDataRange().getValues().findIndex((row, index) =>
+    index > 0 && String(row[0]) === 'MORNING_REMINDER_TIME'
+  );
+  if (morningRow > 0 && String(sheet.getRange(morningRow + 1, 2).getValue()) === '08:00') {
+    sheet.getRange(morningRow + 1, 2).setValue('07:30');
+    sheet.getRange(morningRow + 1, 5).setValue(now_());
+  }
+  const legacyWeights = {
+    TASK_COMPLETION_WEIGHT: ['0.30', '0.20'],
+    TRELLO_WEIGHT: ['0.20', '0.15'],
+    OBSIDIAN_WEIGHT: ['0.20', '0.15']
+  };
+  Object.keys(legacyWeights).forEach(key => {
+    const rowIndex = sheet.getDataRange().getValues().findIndex((row, index) =>
+      index > 0 && String(row[0]) === key
+    );
+    if (rowIndex > 0 && String(sheet.getRange(rowIndex + 1, 2).getValue()) === legacyWeights[key][0]) {
+      sheet.getRange(rowIndex + 1, 2).setValue(legacyWeights[key][1]);
+      sheet.getRange(rowIndex + 1, 5).setValue(now_());
+    }
+  });
 }
 
 function seedRoutines_() {
@@ -366,6 +435,16 @@ function buildDashboard_(sheet) {
     ['Email escalation', '=IF(COUNTA(Email_Escalations!A2:A)>0,"Used","Ready for test")'],
     ['Latest system event', '=IFERROR(LOOKUP(2,1/(System_Logs!F:F<>""),System_Logs!F:F),"No logs yet")']
   ]);
+  sheet.getRange('D12:E12').setValues([['Today’s Top 3', 'Outcome']])
+    .setFontWeight('bold').setBackground('#D9EAF7');
+  sheet.getRange('D13:D15').setValues([['DEEP'], ['WORK'], ['LIFE']]);
+  sheet.getRange('E13:E15').setFormulas([
+    ['=IFERROR(LOOKUP(2,1/(Daily_Outcomes!$A$2:$A$10000=TEXT(TODAY(),"yyyy-mm-dd"))/(Daily_Outcomes!$B$2:$B$10000=D13),Daily_Outcomes!$C$2:$C$10000),"Not set")'],
+    ['=IFERROR(LOOKUP(2,1/(Daily_Outcomes!$A$2:$A$10000=TEXT(TODAY(),"yyyy-mm-dd"))/(Daily_Outcomes!$B$2:$B$10000=D14),Daily_Outcomes!$C$2:$C$10000),"Not set")'],
+    ['=IFERROR(LOOKUP(2,1/(Daily_Outcomes!$A$2:$A$10000=TEXT(TODAY(),"yyyy-mm-dd"))/(Daily_Outcomes!$B$2:$B$10000=D15),Daily_Outcomes!$C$2:$C$10000),"Not set")']
+  ]);
+  sheet.getRange('D13:D15').setFontWeight('bold').setBackground('#D9EAF7');
+  sheet.getRange('E13:E15').setWrap(true);
 
   sheet.getRange('A3:A18').setFontWeight('bold').setBackground('#D9EAF7');
   sheet.getRange('D5:D10').setFontWeight('bold');
@@ -408,6 +487,7 @@ function buildDashboard_(sheet) {
     .filter(protection => protection.getDescription() === 'Dashboard formulas')
     .forEach(protection => protection.remove());
   sheet.getRange('A5:B18').protect().setDescription('Dashboard formulas').setWarningOnly(true);
+  sheet.getRange('E13:E15').protect().setDescription('Dashboard formulas').setWarningOnly(true);
 
   sheet.setColumnWidth(1, 230);
   sheet.setColumnWidth(2, 160);

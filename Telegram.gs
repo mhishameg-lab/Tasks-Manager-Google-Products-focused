@@ -15,37 +15,28 @@ function handleTelegramMessage_(message) {
     deliveryStatus: authorized ? 'Received' : 'Rejected'
   });
   if (!authorized) return;
+  if (processTelegramConversation_(message)) return;
+  if (!command && text) {
+    setTelegramConversation_(message.chat.id, { type: 'capture_classification', capture: text });
+    sendTelegramMessage_(
+      `<b>How should I route this?</b>\n\n${escapeHtml_(truncateText_(text, 240))}\n\nIs it a next action, a project, or an idea?`,
+      [[
+        { text: 'Next action', callback_data: 'capture_route|action' },
+        { text: 'Project', callback_data: 'capture_route|project' },
+        { text: 'Idea', callback_data: 'capture_route|idea' }
+      ]],
+      'Capture classification'
+    );
+    return;
+  }
 
   switch (command) {
     case '/start':
-      sendTelegramMessage_(
-        '<b>Productivity Assistant</b>\n\n' +
-        'I will help you plan your day, track commitments, and follow up on unfinished work.\n\n' +
-        'Use /help to see available commands.',
-        null,
-        'Welcome'
-      );
+      sendHomeMenu_('Welcome');
       break;
 
     case '/help':
-      sendTelegramMessage_(
-        '<b>Available Commands</b>\n\n' +
-        '/today — today’s plan and priorities\n' +
-        '/tomorrow — tomorrow’s plan\n' +
-        '/tasks — pending tasks\n' +
-        '/overdue — overdue tasks\n' +
-        '/progress — progress summary\n' +
-        '/weekly — weekly report\n/monthly — monthly report\n' +
-        '/addtask Task title | Priority | YYYY-MM-DD\n' +
-        '/calendar TASK-ID | YYYY-MM-DD HH:mm | YYYY-MM-DD HH:mm\n' +
-        '/completed — recently completed tasks\n' +
-        '/postpone TASK-ID | YYYY-MM-DD\n' +
-        '/review — daily planning check-in\n' +
-        '/accountability — accountability status\n' +
-        '/habits — Trello and Obsidian check-ins',
-        null,
-        'Help'
-      );
+      sendHelpControlPanel_();
       break;
 
     case '/today':
@@ -99,7 +90,7 @@ function handleTelegramMessage_(message) {
       break;
 
     case '/weekly':
-      sendWeeklyReport_();
+      sendWeeklyReviewQuestion_(requireConfig_(APP.PROPERTIES.TELEGRAM_CHAT_ID), 0, dateKey_(now_()));
       break;
 
     case '/monthly':
@@ -122,15 +113,27 @@ function handleTelegramMessage_(message) {
       handleAddTaskCommand_(text);
       break;
 
+    case '/focus':
+      beginFocusNow_();
+      break;
+
+    case '/capture':
+      sendCaptureChoices_();
+      break;
+
+    case '/settings':
+      sendSettingsPanel_();
+      break;
+
     case '/calendar':
       handleAddCalendarCommand_(text);
       break;
 
     default:
       sendTelegramMessage_(
-        '<b>I did not recognize that command.</b>\n\nUse /help to see available commands.',
-        null,
-        'Unknown command'
+        '<b>What do you need?</b>\n\nChoose a useful next step, or use /help for shortcuts.',
+        buildControlPanelKeyboard_(),
+        'Control panel'
       );
   }
 }
@@ -187,6 +190,7 @@ function processTelegramCallback_(callbackQuery) {
   const action = callbackQuery.data || '';
   let result = 'Completed';
   let response = '';
+  let responseKeyboard = null;
   let actionLogRow;
   let callbackAcknowledged = false;
   let callbackErrorDetails = '';
@@ -227,6 +231,325 @@ function processTelegramCallback_(callbackQuery) {
         '<b>Day started.</b>\n\nFocus on your highest-priority task first. I will keep track of unfinished work and follow up when needed.';
     }
 
+    else if (action === 'home_menu') {
+      response = '<b>Good morning.</b>\n\n<b>Your three outcomes</b>\n' +
+        renderDailyOutcomes_(now_()) + '\n\nWhat do you want to move forward now?';
+      responseKeyboard = [
+        [{ text: 'Start DEEP', callback_data: 'outcome_start|DEEP' }, { text: 'Start WORK', callback_data: 'outcome_start|WORK' }],
+        [{ text: 'Start LIFE', callback_data: 'outcome_start|LIFE' }],
+        [getAddTaskButton_(), { text: 'Show full plan', callback_data: 'home_show_plan' }]
+      ];
+    }
+
+    else if (action === 'home_show_plan') {
+      syncGoogleTasks();
+      const tasks = getTasksForDate_(now_());
+      const taskText = tasks.length
+        ? tasks.slice(0, 10).map(row => `• <b>${escapeHtml_(truncateText_(row[2], 120))}</b>`).join('\n')
+        : 'No dated tasks for today.';
+      const events = getCalendarEventsForDate_(now_());
+      const eventText = events.length
+        ? events.map(event => `• ${escapeHtml_(event.start)} ${escapeHtml_(truncateText_(event.title, 90))}`).join('\n')
+        : 'No calendar appointments today.';
+      response =
+        `<b>Today’s full plan</b>\n\n<b>Three outcomes</b>\n${renderDailyOutcomes_(now_())}` +
+        `\n\n<b>Tasks</b>\n${taskText}\n\n<b>Calendar</b>\n${eventText}`;
+      responseKeyboard = buildControlPanelKeyboard_();
+    }
+
+    else if (action === 'plan_my_day') {
+      const events = getCalendarEventsForDate_(now_());
+      const eventText = events.length
+        ? events.map(event => `• ${escapeHtml_(event.start)} ${escapeHtml_(truncateText_(event.title, 90))}`).join('\n')
+        : 'No calendar appointments today.';
+      response = `<b>Plan today</b>\n\n<b>Your three outcomes</b>\n${renderDailyOutcomes_(now_())}` +
+        `\n\n<b>Calendar</b>\n${eventText}\n\nIs this realistic?`;
+      responseKeyboard = [
+        [{ text: 'Today is planned', callback_data: 'plan_confirm_today' }],
+        [getAddTaskButton_(), { text: 'Show full plan', callback_data: 'home_show_plan' }]
+      ];
+    }
+
+    else if (action === 'focus_now') {
+      beginFocusNow_();
+      response = '<b>Focus prompt opened.</b>\n\nAnswer with the smallest visible result.';
+    }
+
+    else if (action === 'review_progress') {
+      const score = calculateAccountabilityScore_(now_());
+      const confirmed = score === '' ? 'Not enough confirmed activity' : `${score}/100 — ${getAccountabilityRating_(score)}`;
+      response = `<b>Progress</b>\n\n<b>Today’s outcomes</b>\n${renderDailyOutcomes_(now_())}` +
+        `\n\n<b>Accountability:</b> ${confirmed}\n\nRescheduling honestly is useful data, not a failure.`;
+      responseKeyboard = [[{ text: 'Weekly review', callback_data: 'weekly_start' }, { text: 'Back to home', callback_data: 'home_menu' }]];
+    }
+
+    else if (action === 'settings_show') {
+      response = '<b>How this system works</b>\n\n' +
+        '• Google Tasks — actionable next steps and their status\n' +
+        '• Google Calendar — when work and appointments happen\n' +
+        '• Trello — projects and stages (manual check-in)\n' +
+        '• Obsidian — ideas, decisions, learning, and reflection\n' +
+        '• Telegram — capture, planning, focus, and clear decisions\n\nTime zone: Africa/Cairo.';
+      responseKeyboard = [[{ text: 'Back to today', callback_data: 'home_show_plan' }]];
+    }
+
+    else if (action === 'task_add_help') {
+      response = getTaskMiniAppUrl_()
+        ? '<b>Open the task form.</b>\n\nChoose the button below to capture an action without a typed format.'
+        : '<b>Add a task.</b>\n\nWhat is the next action you want to capture?';
+      responseKeyboard = getTaskMiniAppUrl_()
+        ? [[{ text: 'Open task form', web_app: { url: getTaskMiniAppUrl_() } }]]
+        : null;
+      if (!getTaskMiniAppUrl_()) {
+        setTelegramConversation_(requireConfig_(APP.PROPERTIES.TELEGRAM_CHAT_ID), { type: 'task_title' });
+        sendForceReply_('<b>What is the next action you want to capture?</b>', 'Task capture');
+      }
+    }
+
+    else if (action.startsWith('task_due_')) {
+      const parts = action.split('|');
+      const draftId = parts[1];
+      const cache = CacheService.getScriptCache();
+      const draftKey = `task-draft:${draftId}`;
+      const draftText = cache.get(draftKey);
+      if (!draftText) throw new Error('Task draft expired. Please start again.');
+      const draft = JSON.parse(draftText);
+      const choice = parts[0].replace('task_due_', '');
+      if (choice === 'today') draft.dueDate = dateKey_(now_());
+      else if (choice === 'tomorrow') draft.dueDate = addDaysDateKey_(1);
+      else if (choice === 'week') {
+        const remainingDays = (7 - Number(Utilities.formatDate(now_(), APP.TIMEZONE, 'u'))) % 7;
+        draft.dueDate = addDaysDateKey_(remainingDays || 7);
+      } else if (choice === 'none') draft.dueDate = '';
+      else if (choice === 'choose') {
+        cache.put(draftKey, JSON.stringify(draft), 3600);
+        setTelegramConversation_(requireConfig_(APP.PROPERTIES.TELEGRAM_CHAT_ID), {
+          type: 'task_due_date', draftId: draftId
+        });
+        response = '<b>Choose a date.</b>\n\nReply using YYYY-MM-DD.';
+        sendForceReply_('What is the due date? YYYY-MM-DD', 'Task due date');
+      } else {
+        throw new Error('Task due-date choice is invalid.');
+      }
+      cache.put(draftKey, JSON.stringify(draft), 3600);
+      if (choice !== 'choose') {
+        setTaskDraftDueDate_(draftId, draft.dueDate, requireConfig_(APP.PROPERTIES.TELEGRAM_CHAT_ID));
+        response = '<b>One last detail.</b>\n\nWhat would count as done?';
+      }
+    }
+
+    else if (action === 'task_due_continue') {
+      response = '<b>What would count as done?</b>';
+      sendForceReply_('What would count as done?', 'Task done test');
+    }
+
+    else if (action.startsWith('outcome_start|')) {
+      const parts = action.split('|');
+      const date = parts.length === 2 ? dateKey_(now_()) : parts[1];
+      const area = parts.length === 2 ? parts[1] : parts[2];
+      if (!isValidDateKey_(date) || !DAILY_OUTCOME_AREAS.includes(area)) {
+        throw new Error('Outcome selection is invalid.');
+      }
+      const outcome = getDailyOutcomes_(date).find(row => row && row[1] === area);
+      if (outcome) {
+        beginOutcomeSprint_(area, date);
+        response = '<b>Focus started.</b>\n\nName the smallest visible result you can finish in 25–50 minutes.';
+      } else {
+        setTelegramConversation_(requireConfig_(APP.PROPERTIES.TELEGRAM_CHAT_ID), {
+          type: 'outcome_define', area: area, date: date
+        });
+        response = `<b>Set your ${area} outcome.</b>\n\nWhat does done look like, and when will you do it?`;
+        sendForceReply_(`What does done look like for your ${area} outcome today?`, 'Define daily outcome');
+      }
+    }
+
+    else if (action.startsWith('focus_duration|')) {
+      const parts = action.split('|');
+      const legacyFormat = parts.length === 3;
+      const date = legacyFormat ? dateKey_(now_()) : parts[1];
+      const area = legacyFormat ? parts[1] : parts[2];
+      const duration = Number(legacyFormat ? parts[2] : parts[3]);
+      if (!isValidDateKey_(date) || !DAILY_OUTCOME_AREAS.includes(area) || ![25, 50].includes(duration)) {
+        throw new Error('Focus block selection is invalid.');
+      }
+      const due = new Date(Date.now() + duration * 60000);
+      const reminderSheet = getSheet_(APP.SHEETS.REMINDER_HISTORY);
+      const relatedId = `OUTCOME|${date}|${area}`;
+      const row = [newId_('REM'), 'Focus sprint', relatedId, due, '', 1, 'Scheduled', '', '', due];
+      reminderSheet.getRange(reminderSheet.getLastRow() + 1, 1, 1, row.length).setValues([row]);
+      response = `<b>${duration}-minute focus block started.</b>\n\nI’ll check back around ${Utilities.formatDate(due, APP.TIMEZONE, 'HH:mm')}.`;
+      responseKeyboard = [[{ text: 'Back to home', callback_data: 'home_menu' }]];
+      clearTelegramConversation_(requireConfig_(APP.PROPERTIES.TELEGRAM_CHAT_ID));
+    }
+
+    else if (action.startsWith('outcome_status|')) {
+      const parts = action.split('|');
+      const legacyFormat = parts.length === 3;
+      const date = legacyFormat ? dateKey_(now_()) : parts[1];
+      const area = legacyFormat ? parts[1] : parts[2];
+      const status = legacyFormat ? parts[2] : parts[3];
+      if (!isValidDateKey_(date) || !DAILY_OUTCOME_AREAS.includes(area)) throw new Error('Outcome selection is invalid.');
+      const outcome = getDailyOutcomes_(date).find(row => row && row[1] === area);
+      if (!outcome) throw new Error(`No ${area} outcome is set for ${date}.`);
+      if (!['Completed', 'Partial', 'Blocked'].includes(status)) throw new Error('Outcome status is invalid.');
+      if (status === 'Completed' && outcome[4]) {
+        const task = getTaskRecordByGoogleId_(outcome[4]);
+        if (task && task[4] === 'Pending') completeGoogleTask_(outcome[4]);
+      }
+      if (status === 'Blocked') {
+        response = '<b>Thanks for being honest.</b>\n\nWhat is blocking it?';
+        responseKeyboard = [[
+          { text: 'Unclear next step', callback_data: `outcome_block_reason|${date}|${area}|unclear` },
+          { text: 'Missing information', callback_data: `outcome_block_reason|${date}|${area}|information` }
+        ], [
+          { text: 'Low energy', callback_data: `outcome_block_reason|${date}|${area}|energy` },
+          { text: 'External dependency', callback_data: `outcome_block_reason|${date}|${area}|external` }
+        ]];
+      } else {
+        updateDailyOutcomeStatus_(date, area, status, 'User confirmed focus-block outcome.');
+        response = status === 'Completed'
+          ? `<b>${area} outcome marked done.</b>\n\nThe confirmation is recorded${outcome[4] ? ' in Google Tasks' : ''}.`
+          : `<b>${area} outcome marked partly done.</b>\n\nChoose one useful next step.`;
+        responseKeyboard = status === 'Completed'
+          ? [[{ text: 'Back to home', callback_data: 'home_menu' }]]
+          : [[
+              { text: 'Start 25-minute sprint', callback_data: `outcome_start|${date}|${area}` },
+              { text: 'Reschedule', callback_data: `outcome_reschedule|${date}|${area}` }
+            ], [{ text: 'Mark blocked', callback_data: `outcome_status|${date}|${area}|Blocked` }]];
+      }
+    }
+
+    else if (action.startsWith('outcome_block_reason|')) {
+      const parts = action.split('|');
+      const reasons = { unclear: 'Unclear next step', information: 'Missing information', energy: 'Low energy', external: 'External dependency' };
+      const legacyFormat = parts.length === 3;
+      const date = legacyFormat ? dateKey_(now_()) : parts[1];
+      const area = legacyFormat ? parts[1] : parts[2];
+      const reason = legacyFormat ? parts[2] : parts[3];
+      if (!isValidDateKey_(date) || !DAILY_OUTCOME_AREAS.includes(area) || !reasons[reason]) {
+        throw new Error('Blocker reason is invalid.');
+      }
+      updateDailyOutcomeStatus_(date, area, 'Blocked', reasons[reason]);
+      response = `<b>Blocker recorded:</b> ${escapeHtml_(reasons[reason])}\n\nWe can use this in your review.`;
+      responseKeyboard = [[
+        { text: 'Reduce the scope', callback_data: `outcome_reduce|${date}|${area}` },
+        { text: 'Move to a time', callback_data: `outcome_reschedule|${date}|${area}` }
+      ], [{ text: 'Drop with reason', callback_data: `outcome_drop|${date}|${area}` }]];
+    }
+
+    else if (action.startsWith('outcome_reduce|')) {
+      const parts = action.split('|');
+      const date = parts.length === 2 ? dateKey_(now_()) : parts[1];
+      const area = parts.length === 2 ? parts[1] : parts[2];
+      if (!isValidDateKey_(date) || !DAILY_OUTCOME_AREAS.includes(area)) throw new Error('Outcome selection is invalid.');
+      setTelegramConversation_(requireConfig_(APP.PROPERTIES.TELEGRAM_CHAT_ID), {
+        type: 'outcome_reduce', area: area, date: date
+      });
+      response = '<b>Reduce the scope.</b>\n\nReply with a smaller visible result you can finish.';
+      sendForceReply_('What is the smaller visible result?', 'Reduce outcome scope');
+    }
+
+    else if (action.startsWith('outcome_reschedule|')) {
+      const parts = action.split('|');
+      const date = parts.length === 2 ? dateKey_(now_()) : parts[1];
+      const area = parts.length === 2 ? parts[1] : parts[2];
+      if (!isValidDateKey_(date) || !DAILY_OUTCOME_AREAS.includes(area)) throw new Error('Outcome selection is invalid.');
+      setTelegramConversation_(requireConfig_(APP.PROPERTIES.TELEGRAM_CHAT_ID), {
+        type: 'outcome_reschedule', area: area, date: date
+      });
+      response = '<b>Choose a specific time.</b>\n\nReply with Cairo local time as YYYY-MM-DD HH:mm. I’ll create a 25-minute Calendar block after your answer.';
+      sendForceReply_('What date and time should I move this to? YYYY-MM-DD HH:mm', 'Reschedule outcome');
+    }
+
+    else if (action.startsWith('outcome_drop|')) {
+      const parts = action.split('|');
+      const date = parts.length === 2 ? dateKey_(now_()) : parts[1];
+      const area = parts.length === 2 ? parts[1] : parts[2];
+      if (!isValidDateKey_(date) || !DAILY_OUTCOME_AREAS.includes(area)) throw new Error('Outcome selection is invalid.');
+      setTelegramConversation_(requireConfig_(APP.PROPERTIES.TELEGRAM_CHAT_ID), {
+        type: 'outcome_drop', area: area, date: date
+      });
+      response = '<b>Drop this outcome.</b>\n\nReply with a short reason. The related Google Task will remain pending.';
+      sendForceReply_('Why are you dropping this outcome?', 'Drop outcome reason');
+    }
+
+    else if (action === 'capture_project') {
+      setTelegramConversation_(requireConfig_(APP.PROPERTIES.TELEGRAM_CHAT_ID), { type: 'project_capture' });
+      response = '<b>Capture a project.</b>\n\nReply with its name or link. Keep project stages in Trello.';
+      sendForceReply_('What project should you update in Trello?', 'Project capture');
+    }
+
+    else if (action.startsWith('capture_route|')) {
+      const route = action.split('|')[1];
+      const chatId = requireConfig_(APP.PROPERTIES.TELEGRAM_CHAT_ID);
+      const stateKey = `telegram-conversation:${chatId}`;
+      const stateText = CacheService.getScriptCache().get(stateKey);
+      if (!stateText) throw new Error('Capture choice expired. Please send it again.');
+      const state = JSON.parse(stateText);
+      if (state.type !== 'capture_classification' || !state.capture) {
+        throw new Error('There is no captured item to route.');
+      }
+      clearTelegramConversation_(chatId);
+      if (route === 'action') {
+        beginTaskCapture_(chatId, state.capture);
+        response = '<b>Next action selected.</b>\n\nChoose a due date and then define what done looks like.';
+      } else if (route === 'project') {
+        response = `<b>Project belongs in Trello.</b>\n\n${escapeHtml_(state.capture)}\n\nAdd or update it manually in Trello; I do not write to Trello.`;
+        responseKeyboard = [[{ text: 'Back to home', callback_data: 'home_menu' }]];
+      } else if (route === 'idea') {
+        response = `<b>Idea captured in this chat.</b>\n\n${escapeHtml_(state.capture)}\n\nAdd it manually to your Obsidian Inbox or Someday list; I do not write to Obsidian.`;
+        responseKeyboard = [[{ text: 'Back to home', callback_data: 'home_menu' }]];
+      } else {
+        throw new Error('Capture route is invalid.');
+      }
+    }
+
+    else if (action === 'capture_idea') {
+      setTelegramConversation_(requireConfig_(APP.PROPERTIES.TELEGRAM_CHAT_ID), { type: 'idea_capture' });
+      response = '<b>Capture an idea.</b>\n\nReply with the idea; then add it manually to your Obsidian Inbox or Someday list.';
+      sendForceReply_('What idea do you want to remember?', 'Idea capture');
+    }
+
+    else if (action === 'capture_next_action') {
+      response = '<b>Capture a next action.</b>\n\nUse the task form or start with a short sentence.';
+      if (getTaskMiniAppUrl_()) {
+        responseKeyboard = [[{ text: 'Open task form', web_app: { url: getTaskMiniAppUrl_() } }]];
+      } else {
+        setTelegramConversation_(requireConfig_(APP.PROPERTIES.TELEGRAM_CHAT_ID), { type: 'task_title' });
+        sendForceReply_('What is the next action you want to capture?', 'Task capture');
+      }
+    }
+
+    else if (action === 'weekly_start') {
+      sendWeeklyReviewQuestion_(requireConfig_(APP.PROPERTIES.TELEGRAM_CHAT_ID), 0, dateKey_(now_()));
+      response = '<b>Weekly review started.</b>\n\nI’ll keep it to one question at a time.';
+    }
+
+    else if (action === 'monthly_project_review') {
+      setTelegramConversation_(requireConfig_(APP.PROPERTIES.TELEGRAM_CHAT_ID), {
+        type: 'monthly_project_name', date: dateKey_(now_())
+      });
+      response = '<b>Monthly project decision.</b>\n\nWhich project needs a continue, change, pause, or kill decision?';
+      sendForceReply_('What is the project name?', 'Monthly review');
+    }
+
+    else if (action.startsWith('monthly_decision|')) {
+      const decision = action.split('|')[1];
+      const cache = CacheService.getScriptCache();
+      const stateKey = `telegram-conversation:${requireConfig_(APP.PROPERTIES.TELEGRAM_CHAT_ID)}`;
+      const stateText = cache.get(stateKey);
+      if (!stateText) throw new Error('Monthly project review expired; start it again.');
+      const state = JSON.parse(stateText);
+      if (state.type !== 'monthly_project_decision' || !['continue', 'change', 'pause', 'kill'].includes(decision)) {
+        throw new Error('Monthly project decision is invalid.');
+      }
+      setTelegramConversation_(requireConfig_(APP.PROPERTIES.TELEGRAM_CHAT_ID), {
+        type: 'monthly_project_reason', date: state.date, project: state.project, decision: decision
+      });
+      response = '<b>Decision saved.</b>\n\nWhat is the reason, and when should you review this project again?';
+      sendForceReply_('Add the reason and a review date.', 'Monthly review reason');
+    }
+
     else if (action === 'plan_confirm_today') {
       const tasks = getTasksForDate_(now_());
       recordRoutineCheckin_('ROUTINE-DAILY-PLAN', 'Completed', 'Telegram', 'Daily plan confirmed', tasks.length);
@@ -238,12 +561,17 @@ function processTelegramCallback_(callbackQuery) {
 
     else if (action.startsWith('plan_confirm_date|')) {
       const date = action.split('|')[1];
-      const planDate = new Date(`${date}T12:00:00`);
-      if (dateKey_(planDate) !== date) throw new Error('Planning date is invalid.');
-      const tasks = getTasksForDate_(planDate);
-      recordRoutineCheckin_('ROUTINE-DAILY-PLAN', 'Completed', 'Telegram', 'Future plan confirmed', tasks.length, planDate);
-      upsertDailyPlanningReview_(planDate, true);
-      response = `<b>Plan confirmed for ${escapeHtml_(date)}.</b>\n\n${tasks.length} task(s) are scheduled.`;
+      const planDate = Utilities.parseDate(`${date} 12:00`, APP.TIMEZONE, 'yyyy-MM-dd HH:mm');
+      if (!isValidDateKey_(date) || dateKey_(planDate) !== date) throw new Error('Planning date is invalid.');
+      if (date !== dateKey_(now_())) {
+        response = '<b>Plan saved.</b>\n\nThe planning check-in opens after this date begins, during the midnight checkpoint.';
+        responseKeyboard = [[{ text: 'Back to home', callback_data: 'home_menu' }]];
+      } else {
+        const tasks = getTasksForDate_(planDate);
+        recordRoutineCheckin_('ROUTINE-DAILY-PLAN', 'Completed', 'Telegram', 'Daily plan confirmed', tasks.length, planDate);
+        upsertDailyPlanningReview_(planDate, true);
+        response = `<b>Plan confirmed for ${escapeHtml_(date)}.</b>\n\n${tasks.length} task(s) are scheduled.`;
+      }
     }
 
     else if (action === 'plan_remind_later') {
@@ -254,29 +582,31 @@ function processTelegramCallback_(callbackQuery) {
       result = 'Postponed';
     }
 
-    else if (action === 'plan_help' || action === 'task_add_help') {
-      response =
-        '<b>Let’s build your plan.</b>\n\n' +
-        'Create tasks with:\n' +
-        '<code>/addtask Task title | High | YYYY-MM-DD</code>\n\n' +
-        'Example:\n' +
-        '<code>/addtask Finish proposal | High | 2026-11-23</code>';
+    else if (action === 'plan_help') {
+      startCurrentDayPlanning_();
+      response = '<b>Let’s plan today.</b>\n\nI’ll ask for one DEEP, WORK, and LIFE outcome at a time.';
     }
 
     else if (action === 'plan_view_today') {
-      sendTodayBriefing_(true);
-      response = '<b>Today’s task list has been refreshed.</b>';
+      syncGoogleTasks();
+      const tasks = getTasksForDate_(now_());
+      response = tasks.length
+        ? '<b>Today’s tasks</b>\n\n' + tasks.slice(0, 15).map(row =>
+            `• <b>${escapeHtml_(truncateText_(row[2], 130))}</b> — ${escapeHtml_(row[5] || 'Medium')}`
+          ).join('\n')
+        : '<b>No dated tasks today.</b>\n\nUse Add something to capture the next action.';
+      responseKeyboard = [[getAddTaskButton_()], [{ text: 'Back to home', callback_data: 'home_menu' }]];
     }
 
     else if (action.startsWith('plan_view_date|')) {
       const date = action.split('|')[1];
-      const planDate = new Date(`${date}T12:00:00`);
+      if (!isValidDateKey_(date)) throw new Error('Requested plan date is invalid.');
+      const planDate = Utilities.parseDate(`${date} 12:00`, APP.TIMEZONE, 'yyyy-MM-dd HH:mm');
       const tasks = getTasksForDate_(planDate);
       const text = tasks.length
         ? tasks.map(row => `• <b>${escapeHtml_(row[2])}</b> — ${escapeHtml_(row[5])}`).join('\n')
         : 'No tasks are scheduled for that date.';
-      sendTelegramMessage_(`<b>Tasks for ${escapeHtml_(date)}</b>\n\n${text}`, null, 'Scheduled tasks');
-      response = '<b>Task list sent.</b>';
+      response = `<b>Tasks for ${escapeHtml_(date)}</b>\n\n${text}`;
     }
 
     else if (action === 'task_overdue') {
@@ -341,22 +671,58 @@ function processTelegramCallback_(callbackQuery) {
 
     else if (action.startsWith('task_reschedule|')) {
       const task = getTaskRecordByGoogleId_(action.split('|')[1]);
-      response = task
-        ? `<b>Reschedule task</b>\n\nUse:\n<code>/postpone ${escapeHtml_(task[0])} | YYYY-MM-DD</code>`
-        : '<b>Task not found.</b>';
+      if (!task || task[4] !== 'Pending') throw new Error('Pending task not found.');
+      setTelegramConversation_(requireConfig_(APP.PROPERTIES.TELEGRAM_CHAT_ID), {
+        type: 'task_reschedule', googleTaskId: task[1]
+      });
+      response = '<b>Move this task.</b>\n\nChoose a new due date or a specific time.';
+      sendForceReply_('When should this happen? YYYY-MM-DD or YYYY-MM-DD HH:mm', 'Reschedule task');
+    }
+
+    else if (action.startsWith('task_reduce|')) {
+      const task = getTaskRecordByGoogleId_(action.split('|')[1]);
+      if (!task || task[4] !== 'Pending') throw new Error('Pending task not found.');
+      setTelegramConversation_(requireConfig_(APP.PROPERTIES.TELEGRAM_CHAT_ID), {
+        type: 'task_reduce', googleTaskId: task[1]
+      });
+      response = `<b>Reduce the scope of:</b>\n\n${escapeHtml_(task[2])}`;
+      sendForceReply_('What smaller visible deliverable can you finish?', 'Reduce task scope');
+    }
+
+    else if (action.startsWith('task_block|')) {
+      const task = getTaskRecordByGoogleId_(action.split('|')[1]);
+      if (!task || task[4] !== 'Pending') throw new Error('Pending task not found.');
+      response = `<b>What is blocking this?</b>\n\n${escapeHtml_(task[2])}`;
+      responseKeyboard = [[
+        { text: 'Unclear next step', callback_data: `task_block_reason|${task[1]}|unclear` },
+        { text: 'Missing information', callback_data: `task_block_reason|${task[1]}|information` }
+      ], [
+        { text: 'Low energy', callback_data: `task_block_reason|${task[1]}|energy` },
+        { text: 'External dependency', callback_data: `task_block_reason|${task[1]}|external` }
+      ]];
+    }
+
+    else if (action.startsWith('task_block_reason|')) {
+      const parts = action.split('|');
+      const task = getTaskRecordByGoogleId_(parts[1]);
+      const reasons = { unclear: 'Unclear next step', information: 'Missing information', energy: 'Low energy', external: 'External dependency' };
+      if (!task || task[4] !== 'Pending' || !reasons[parts[2]]) throw new Error('Pending task or blocker reason not found.');
+      logTaskHistory_(task[0], task[4], task[4], task[7], task[7], `Blocked: ${reasons[parts[2]]}`, 'Telegram');
+      response = `<b>Blocker recorded:</b> ${escapeHtml_(reasons[parts[2]])}\n\nThe task remains pending in Google Tasks.`;
+      responseKeyboard = [[
+        { text: 'Reduce scope', callback_data: `task_reduce|${task[1]}` },
+        { text: 'Reschedule', callback_data: `task_reschedule|${task[1]}` }
+      ]];
     }
 
     else if (action.startsWith('task_cancel_prompt|')) {
       const taskId = action.split('|')[1];
-      sendTelegramMessage_(
-        '<b>Cancel this task?</b>\n\nIt will be removed from Google Tasks, while its database history is retained.',
-        [[
+      response =
+        '<b>Cancel this task?</b>\n\nIt will be removed from Google Tasks, while its database history is retained.';
+      responseKeyboard = [[
           { text: 'Confirm cancellation', callback_data: `task_cancel_confirm|${taskId}` },
           { text: 'Keep pending', callback_data: `task_keep|${taskId}` }
-        ]],
-        'Task cancellation confirmation'
-      );
-      response = '';
+        ]];
     }
 
     else if (action.startsWith('task_cancel_confirm|')) {
@@ -384,12 +750,24 @@ function processTelegramCallback_(callbackQuery) {
       const draftJson = CacheService.getScriptCache().get(draftKey);
       if (!draftJson) throw new Error('Calendar draft expired; start /calendar again.');
       const draft = JSON.parse(draftJson);
-      createCalendarEventForTask_(
+      const event = createCalendarEventForTask_(
         draft.title,
         draft.startDateTime,
         draft.endDateTime,
         draft.description
       );
+      if (draft.outcomeArea && draft.outcomeDate) {
+        updateDailyOutcomeStatus_(
+          draft.outcomeDate,
+          draft.outcomeArea,
+          'Planned',
+          'Calendar block explicitly confirmed.',
+          '',
+          event.getId(),
+          new Date(draft.startDateTime),
+          new Date(draft.endDateTime)
+        );
+      }
       CacheService.getScriptCache().remove(draftKey);
       response = `<b>Calendar event created.</b>\n\n${escapeHtml_(draft.title)}\n${escapeHtml_(draft.startLabel)}–${escapeHtml_(draft.endLabel)}`;
     }
@@ -410,6 +788,18 @@ function processTelegramCallback_(callbackQuery) {
       response = '<b>Daily review recorded.</b>';
     }
 
+    else if (action === 'shutdown_done') {
+      recordRoutineCheckin_('ROUTINE-DAILY-REVIEW', 'Completed', 'Telegram', 'User confirmed there are no open loops to capture.');
+      markDailyReviewComplete_(now_());
+      response = '<b>Shutdown confirmed.</b>\n\nOpen loops are acknowledged. Tomorrow’s planning conversation starts at 23:20.';
+      responseKeyboard = [[{ text: 'Plan tomorrow now', callback_data: 'plan_next_day_now' }]];
+    }
+
+    else if (action === 'plan_next_day_now') {
+      startNextDayPlanning_();
+      response = '<b>Planning conversation started.</b>\n\nI’ll ask one focused question at a time.';
+    }
+
     else if (action === 'calendar_confirm') {
       recordRoutineCheckin_('ROUTINE-CALENDAR', 'Completed', 'Telegram', 'Calendar adherence confirmed by user.');
       upsertDailyPlanningReview_(now_(), getConfirmedRoutine_('ROUTINE-DAILY-PLAN', now_()));
@@ -417,18 +807,24 @@ function processTelegramCallback_(callbackQuery) {
     }
 
     else if (action === 'weekly_unfinished') {
-      sendTaskList_();
-      response = '<b>Unfinished tasks sent.</b>';
+      const rows = getSheet_(APP.SHEETS.TASKS).getDataRange().getValues().slice(1)
+        .filter(row => row[4] === 'Pending' && row[1]).slice(0, 12);
+      response = rows.length
+        ? '<b>Open next actions</b>\n\n' + rows.map(row =>
+            `• <b>${escapeHtml_(truncateText_(row[2], 120))}</b>${row[7] ? ` — ${escapeHtml_(row[7])}` : ''}`
+          ).join('\n')
+        : '<b>No pending tasks are recorded.</b>';
+      responseKeyboard = [[getAddTaskButton_()], [{ text: 'Back to home', callback_data: 'home_menu' }]];
     }
 
     else if (action === 'weekly_report') {
-      sendWeeklyReport_();
-      response = '<b>Weekly report sent.</b>';
+      response = '<b>The detailed metrics are sent by email.</b>\n\nStart the guided review to capture blockers, open loops, and next week’s experiment.';
+      responseKeyboard = [[{ text: 'Start weekly reflection', callback_data: 'weekly_start' }]];
     }
 
     else if (action === 'weekly_plan') {
-      sendTomorrowPlan_();
-      response = '<b>Next-week planning prompt sent.</b>';
+      startNextDayPlanning_();
+      response = '<b>Planning conversation started.</b>\n\nI’ll ask one focused question at a time.';
     }
 
     else {
@@ -453,7 +849,20 @@ function processTelegramCallback_(callbackQuery) {
     updateTelegramAction_(actionLogRow, result, result === 'Failed' ? callbackErrorDetails : '');
   }
 
-  if (response) sendTelegramMessage_(response, null, 'Button action');
+  if (response) {
+    const callbackMessage = callbackQuery.message;
+    if (callbackMessage && callbackMessage.chat && callbackMessage.message_id) {
+      editTelegramMessage_(
+        callbackMessage.chat.id,
+        callbackMessage.message_id,
+        response,
+        responseKeyboard,
+        'Button action'
+      );
+    } else {
+      sendTelegramMessage_(response, responseKeyboard, 'Button action');
+    }
+  }
 }
 
 function acknowledgeTelegramCallback_(callbackQueryId, text) {
@@ -475,49 +884,35 @@ function acknowledgeTelegramCallback_(callbackQueryId, text) {
   }
 }
 
+function editTelegramMessage_(chatId, messageId, text, keyboard, category) {
+  const payload = {
+    chat_id: chatId,
+    message_id: messageId,
+    text: text,
+    parse_mode: 'HTML',
+    disable_web_page_preview: true
+  };
+  payload.reply_markup = { inline_keyboard: keyboard && keyboard.length ? keyboard : [] };
+  try {
+    telegramRequest_('editMessageText', payload);
+  } catch (error) {
+    if (!String(error.message || '').includes('message is not modified')) throw error;
+  }
+  logTelegramMessage_({
+    chatId: chatId,
+    messageId: messageId,
+    direction: 'outgoing',
+    type: 'edit',
+    category: category || 'Button action',
+    content: redactSensitiveText_(text),
+    deliveryStatus: 'Sent'
+  });
+  return true;
+}
+
 function sendTodayBriefing_(skipSync) {
   if (!skipSync) syncGoogleTasks();
-  if (typeof getTasksForDate_ !== 'function') {
-    sendDailyPlanningPrompt_();
-    return;
-  }
-
-  const today = new Date();
-  const tasks = getTasksForDate_(today);
-  const taskText = tasks.length
-    ? tasks.slice(0, 20).map((task, index) =>
-        `${index + 1}. <b>${escapeHtml_(truncateText_(task[2], 140))}</b> — ${escapeHtml_(task[5] || 'Medium')} priority`
-      ).join('\n')
-    : 'No tasks are scheduled for today.';
-  const events = getCalendarEventsForDate_(today);
-  const eventText = events.length
-    ? events.map(event => `${escapeHtml_(event.start)}–${escapeHtml_(event.end)} ${escapeHtml_(event.title)}`).join('\n')
-    : 'No calendar appointments.';
-  const overdue = getOverdueTasks_();
-  const postponed = tasks.filter(task => Number(task[10] || 0) > 0);
-  const overdueText = overdue.length
-    ? overdue.slice(0, 8).map(task => `• ${escapeHtml_(truncateText_(task[2], 140))} — due ${escapeHtml_(task[7])}`).join('\n')
-    : 'None';
-  const postponedText = postponed.length
-    ? postponed.slice(0, 8).map(task => `• ${escapeHtml_(truncateText_(task[2], 140))} (${task[10]} postponement(s))`).join('\n')
-    : 'None';
-
-  const message =
-    '<b>Today’s Productivity Briefing</b>\n\n' +
-    '<b>Tasks</b>\n' + taskText + '\n\n' +
-    '<b>Appointments</b>\n' + eventText + '\n\n' +
-    `<b>Overdue</b>\n${overdueText}\n\n<b>Postponed</b>\n${postponedText}\n\n` +
-    'Choose your next action:';
-
-  const keyboard = [
-    [{ text: 'Start my day', callback_data: 'day_start' }],
-    [
-      { text: 'Add task', callback_data: 'task_add_help' },
-      { text: 'Review overdue', callback_data: 'task_overdue' }
-    ]
-  ];
-
-  sendTelegramMessage_(message, keyboard, 'Morning briefing');
+  sendHomeMenu_('Morning briefing');
 }
 
 function sendTomorrowPlan_() {
@@ -532,8 +927,7 @@ function sendTomorrowPlan_() {
   }
 
   syncGoogleTasks();
-  const tomorrow = new Date();
-  tomorrow.setDate(tomorrow.getDate() + 1);
+  const tomorrow = Utilities.parseDate(`${addDaysDateKey_(1)} 12:00`, APP.TIMEZONE, 'yyyy-MM-dd HH:mm');
 
   const tasks = getTasksForDate_(tomorrow);
   const taskText = tasks.length
@@ -553,12 +947,9 @@ function sendTomorrowPlan_() {
     'Please confirm whether this plan is realistic.';
 
   const keyboard = [
-    [{ text: 'Tomorrow is planned', callback_data: `plan_confirm_date|${dateKey_(tomorrow)}` }],
-    [
-      { text: 'Help me plan', callback_data: 'plan_help' },
-      { text: 'Not yet / remind me later', callback_data: 'plan_remind_later' }
-    ],
-    [{ text: 'View tasks', callback_data: `plan_view_date|${dateKey_(tomorrow)}` }]
+    [{ text: 'Help me plan', callback_data: 'plan_help' }],
+    [{ text: 'View tasks', callback_data: `plan_view_date|${dateKey_(tomorrow)}` }],
+    [{ text: 'Back to home', callback_data: 'home_menu' }]
   ];
 
   sendTelegramMessage_(message, keyboard, 'Tomorrow planning');
@@ -591,6 +982,7 @@ function setTelegramWebhook() {
       throw new Error('TELEGRAM_WEBHOOK_SECRET must be 1–256 characters using only letters, numbers, underscores, or hyphens.');
     }
 
+    configureTelegramCommands();
     telegramRequest_('setWebhook', {
       url: relayUrl,
       secret_token: webhookSecret,
@@ -617,6 +1009,7 @@ function setTelegramWebhook() {
 
 function enableTelegramPolling() {
   return withScriptLock_(() => {
+    configureTelegramCommands();
     telegramRequest_('deleteWebhook', { drop_pending_updates: true });
     const webhook = telegramRequest_('getWebhookInfo', {});
     if (webhook.url) {
@@ -735,7 +1128,7 @@ function runTelegramPollingDiagnostics() {
   return result;
 }
 
-function sendTelegramMessage_(text, keyboard, category, metadata) {
+function sendTelegramMessage_(text, keyboard, category, metadata, replyMarkup) {
   const chatId = requireConfig_(APP.PROPERTIES.TELEGRAM_CHAT_ID);
   const payload = {
     chat_id: chatId,
@@ -743,7 +1136,9 @@ function sendTelegramMessage_(text, keyboard, category, metadata) {
     parse_mode: 'HTML',
     disable_web_page_preview: true
   };
-  if (keyboard && keyboard.length) {
+  if (replyMarkup) {
+    payload.reply_markup = replyMarkup;
+  } else if (keyboard && keyboard.length) {
     payload.reply_markup = { inline_keyboard: keyboard };
   }
 
@@ -817,9 +1212,9 @@ function sendDailyPlanningPrompt_() {
   const eventText = events.length
     ? events.map(event => `• ${escapeHtml_(event.start)} ${escapeHtml_(event.title)}`).join('\n')
     : 'No appointments on the calendar.';
-  const planned = tasks.length > 0;
+  const planned = tasks.length > 0 || getDailyOutcomes_(day).some(Boolean);
   sendTelegramMessage_(
-    `<b>Plan the day</b>\n\n<b>Tasks</b>\n${taskText}\n\n<b>Appointments</b>\n${eventText}\n\n<b>Planning status:</b> ${planned ? 'Plan available; please confirm it is realistic.' : 'Not planned yet.'}`,
+    `<b>Plan the day</b>\n\n<b>Your three outcomes</b>\n${renderDailyOutcomes_(day)}\n\n<b>Tasks</b>\n${taskText}\n\n<b>Appointments</b>\n${eventText}\n\n<b>Planning status:</b> ${planned ? 'Plan available; please confirm it is realistic.' : 'Not planned yet.'}`,
     [
       [{ text: 'Today is planned', callback_data: 'plan_confirm_today' }],
       [
@@ -861,40 +1256,11 @@ function sendObsidianCheckin_() {
 
 function handleAddTaskCommand_(text) {
   const content = text.replace(/^\/addtask(?:@\w+)?\s*/i, '').trim();
-  const fields = content.split('|').map(value => value.trim());
-  if (!fields[0]) {
-    sendTelegramMessage_(
-      '<b>Create a task</b>\n\nUse:\n<code>/addtask Task title | High | YYYY-MM-DD</code>\n\nDue date is optional. The task is created only after confirmation.',
-      null,
-      'Task creation guide'
-    );
-    return;
+  if (content) {
+    beginTaskCapture_(requireConfig_(APP.PROPERTIES.TELEGRAM_CHAT_ID), content);
+  } else {
+    sendTaskMiniAppPrompt_();
   }
-  const priority = fields[1] || 'Medium';
-  if (!['High', 'Medium', 'Low'].includes(priority)) {
-    sendTelegramMessage_('<b>Invalid priority.</b>\n\nChoose High, Medium, or Low.', null, 'Task creation validation');
-    return;
-  }
-  const dueDate = fields[2] || '';
-  if (dueDate && !isValidDateKey_(dueDate)) {
-    sendTelegramMessage_('<b>Invalid due date.</b>\n\nUse a real date in YYYY-MM-DD format, for example 2026-11-23.', null, 'Task creation validation');
-    return;
-  }
-  const draftId = Utilities.getUuid();
-  CacheService.getScriptCache().put(`task-draft:${draftId}`, JSON.stringify({
-    title: fields[0],
-    priority: priority,
-    dueDate: dueDate,
-    notes: fields.slice(3).join(' | ')
-  }), 3600);
-  sendTelegramMessage_(
-    `<b>Confirm new task</b>\n\n<b>Title:</b> ${escapeHtml_(fields[0])}\n<b>Priority:</b> ${escapeHtml_(priority)}\n<b>Due:</b> ${escapeHtml_(dueDate || 'Not set')}`,
-    [[
-      { text: 'Create in Google Tasks', callback_data: `task_create_confirm|${draftId}` },
-      { text: 'Discard draft', callback_data: `task_create_discard|${draftId}` }
-    ]],
-    'Task creation confirmation'
-  );
 }
 
 function handleAddCalendarCommand_(text) {
@@ -1018,20 +1384,30 @@ function sendAccountabilityStatus_() {
 
 function sendWeeklyReport_() {
   const report = buildWeeklyReport_();
-  sendTelegramMessage_(report.text, [
+  sendTelegramMessage_(
+    '<b>Weekly review</b>\n\n' +
+    'We’ll look at your DEEP, WORK, and LIFE outcomes; repeated blockers; one open loop to delete, delegate, or schedule; one experiment; and one project decision.\n\n' +
+    'The detailed metrics are in the weekly email. Start the guided reflection when ready.',
     [
-      { text: 'Review report', callback_data: 'weekly_report' },
-      { text: 'Unfinished tasks', callback_data: 'weekly_unfinished' },
-      { text: 'Plan next week', callback_data: 'weekly_plan' }
+      [{ text: 'Start weekly reflection', callback_data: 'weekly_start' }],
+      [{ text: 'Unfinished tasks', callback_data: 'weekly_unfinished' }, { text: 'Plan next week', callback_data: 'weekly_plan' }],
+      [{ text: 'Confirm weekly review', callback_data: 'weekly_confirm' }]
     ],
-    [{ text: 'Confirm weekly review', callback_data: 'weekly_confirm' }]
-  ], 'Weekly report');
+    'Weekly review'
+  );
   sendReportEmail_('Weekly productivity report', report.text, report.metrics.start);
 }
 
 function sendMonthlyReport_() {
   const report = buildMonthlyReport_();
-  sendTelegramMessage_(report.text, null, 'Monthly report');
+  sendTelegramMessage_(
+    `${report.text}\n\n<b>Project decision:</b> continue, change approach, pause, or kill. Record a reason and a review date.`,
+    [
+      [{ text: 'Review a project', callback_data: 'monthly_project_review' }],
+      [{ text: 'Back to home', callback_data: 'home_menu' }]
+    ],
+    'Monthly review'
+  );
   sendReportEmail_('Monthly productivity report', report.text, report.metrics.start);
 }
 

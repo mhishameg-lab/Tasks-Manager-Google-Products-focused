@@ -146,7 +146,8 @@ function buildMonthlyReport_() {
     `<b>Responsibilities needing attention:</b> ${metrics.repeatedProblems.length ? metrics.repeatedProblems.map(escapeHtml_).join(', ') : 'No repeated postponements identified'}\n` +
     `<b>High-workload days:</b> ${metrics.workloadDays.length ? metrics.workloadDays.join(', ') : 'None'}\n` +
     `<b>Missed responsibilities:</b> ${metrics.missedResponsibilities.length ? metrics.missedResponsibilities.map(escapeHtml_).join(', ') : 'None recorded'}\n` +
-    '<b>Recommendation:</b> reduce carry-forward work and reserve time for recurring responsibilities.';
+    '<b>Recommendation:</b> reduce carry-forward work and reserve time for recurring responsibilities.\n' +
+    '<b>Project decisions:</b> continue, change approach, pause, or kill; record the reason and a review date.';
   metrics.improvements = improvementText;
   saveReview_(APP.SHEETS.MONTHLY_REVIEWS, metrics, 'month');
   return { metrics, text };

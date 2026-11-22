@@ -143,6 +143,9 @@ function runSystemHealthCheck() {
     const spreadsheet = getDb_();
     const requiredHeaders = {
       Tasks: ['Internal Record ID', 'Google Task ID', 'Task Title', 'Description', 'Status', 'Priority', 'Creation Date', 'Due Date', 'Completion Date', 'Last Updated', 'Postponement Count', 'Last Reminder', 'Escalation Status', 'Notes'],
+      Daily_Outcomes: ['Date', 'Area', 'Outcome', 'Done Test', 'Google Task ID', 'Status', 'Calendar Event ID', 'Time Block Start', 'Time Block End', 'Status Details', 'Updated At', 'Outcome Record ID'],
+      Review_Notes: ['Note ID', 'Review Type', 'Review Date', 'Question', 'Answer', 'Related Area', 'Timestamp'],
+      MiniApp_Requests: ['Request ID', 'Google Task ID', 'Created At', 'Status', 'Error Details'],
       Telegram_Messages: ['Message Log ID', 'Telegram Chat ID', 'Telegram Message ID', 'Direction', 'Message Type', 'Message Category', 'Message Content', 'Related Task ID', 'Related Routine ID', 'Timestamp', 'Delivery Status', 'Error Details', 'Callback Information'],
       Telegram_Actions: ['Action ID', 'Telegram User ID', 'Callback Query ID', 'Button Identifier', 'Action Name', 'Related Task or Routine', 'Action Result', 'Timestamp', 'Error Details'],
       Reminder_History: ['Reminder ID', 'Reminder Category', 'Related Task or Routine', 'Scheduled Time', 'Actual Sent Time', 'Reminder Number', 'Delivery Status', 'User Response', 'Confirmation Time', 'Follow-up Scheduled Time'],
@@ -167,7 +170,8 @@ function runSystemHealthCheck() {
     if (missing.length) throw new Error(`Missing tabs or mismatched headers: ${missing.join(', ')}`);
     result.sheets = 'OK';
     const dashboard = spreadsheet.getSheetByName(APP.SHEETS.DASHBOARD);
-    const dashboardFormulas = dashboard.getRange('B5:B18').getFormulas().flat();
+    const dashboardFormulas = dashboard.getRangeList(['B5:B18', 'E13:E15']).getRanges()
+      .flatMap(range => range.getFormulas().flat());
     const dashboardErrors = dashboard.getDataRange().getDisplayValues().flat()
       .filter(value => /^#(REF!|ERROR!|NAME\?|VALUE!)/.test(value));
     if (dashboardFormulas.some(formula => !formula) || !dashboard.getCharts().length || dashboardErrors.length) {
@@ -222,7 +226,7 @@ function runSystemHealthCheck() {
       row[2] === 'ERROR' && row[1] && new Date(row[1]).getTime() >= cutoff
     ).length;
     result.ok = result.sheets === 'OK' && result.dashboard === 'OK' && result.tasks === 'OK' &&
-      result.calendar === 'OK' && result.telegram === 'OK' &&
+      result.calendar === 'OK' && String(result.telegram).startsWith('OK') &&
       result.email === 'OK' && result.triggers === 'OK' && result.recentFailures === 0;
     logSystem_(result.ok ? 'INFO' : 'WARNING', 'Health check', 'Completed', JSON.stringify(result));
     return result;

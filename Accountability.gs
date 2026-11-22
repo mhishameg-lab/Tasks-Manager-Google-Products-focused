@@ -10,10 +10,26 @@ function calculateAccountabilityScore_(date) {
   const dayKey = dateKey_(date);
   const tasks = getSheet_(APP.SHEETS.TASKS).getDataRange().getValues().slice(1)
     .filter(row => row[7] && dateKey_(row[7]) === dayKey && row[4] !== 'Cancelled' && row[4] !== 'Deleted');
+  const outcomes = getDailyOutcomes_(date).filter(Boolean);
   const checks = [
     {
       key: 'TASK_COMPLETION_WEIGHT',
       value: tasks.length ? tasks.filter(row => row[4] === 'Completed').length / tasks.length : null
+    },
+    {
+      key: 'OUTCOME_CLARITY_WEIGHT',
+      value: outcomes.length
+        ? outcomes.filter(row => String(row[2] || '').trim() && String(row[3] || '').trim()).length / DAILY_OUTCOME_AREAS.length
+        : null
+    },
+    {
+      key: 'HONEST_RESCHEDULE_WEIGHT',
+      value: outcomes.length
+        ? outcomes.filter(row =>
+            ['Completed', 'Partial', 'Blocked', 'Rescheduled', 'Dropped'].includes(String(row[5])) &&
+            String(row[9] || '').trim()
+          ).length / DAILY_OUTCOME_AREAS.length
+        : null
     },
     { key: 'CALENDAR_ADHERENCE_WEIGHT', value: getConfirmedRoutine_('ROUTINE-CALENDAR', date) ? 1 : null },
     { key: 'TRELLO_WEIGHT', value: getConfirmedRoutine_('ROUTINE-TRELLO', date) ? 1 : null },
@@ -23,7 +39,12 @@ function calculateAccountabilityScore_(date) {
       value: (() => {
         const plan = getConfirmedRoutine_('ROUTINE-DAILY-PLAN', date);
         const review = getConfirmedRoutine_('ROUTINE-DAILY-REVIEW', date);
-        return plan || review ? (Number(plan) + Number(review)) / 2 : null;
+        const planningConfirmations = plan || review ? (Number(plan) + Number(review)) / 2 : null;
+        const outcomeCoverage = outcomes.length / DAILY_OUTCOME_AREAS.length;
+        if (planningConfirmations == null && !outcomes.length) return null;
+        return planningConfirmations == null
+          ? outcomeCoverage
+          : (planningConfirmations + outcomeCoverage) / 2;
       })()
     }
   ];

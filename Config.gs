@@ -4,6 +4,9 @@ const APP = {
   SHEETS: {
     DASHBOARD: 'Dashboard',
     TASKS: 'Tasks',
+    DAILY_OUTCOMES: 'Daily_Outcomes',
+    REVIEW_NOTES: 'Review_Notes',
+    MINI_APP_REQUESTS: 'MiniApp_Requests',
     TELEGRAM_MESSAGES: 'Telegram_Messages',
     TELEGRAM_ACTIONS: 'Telegram_Actions',
     REMINDER_HISTORY: 'Reminder_History',

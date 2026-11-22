@@ -39,21 +39,35 @@ function runReminderCycle_() {
       upsertDailyPlanningReview_(now, false);
     }
 
-    const morningTime = String(getSetting_('MORNING_REMINDER_TIME', '08:00'));
+    const morningTime = String(getSetting_('MORNING_REMINDER_TIME', '07:30'));
     if (isWithinTimeWindow_(morningTime) && !hasReminderFor_('MORNING', todayKey, morningTime)) {
       sendTodayBriefing_();
       recordReminder_('Morning briefing', 'MORNING', morningTime, 'Sent', 1);
+    }
+    const workBriefingTime = String(getSetting_('WORK_BRIEFING_TIME', '14:15'));
+    if (isWithinTimeWindow_(workBriefingTime) && !hasReminderFor_('WORK-BRIEFING', todayKey, workBriefingTime)) {
+      startWorkBriefing_();
+      recordReminder_('SDR work briefing', 'WORK-BRIEFING', workBriefingTime, 'Sent', 1);
+    }
+    const eveningReviewTime = String(getSetting_('EVENING_REVIEW_TIME', '22:30'));
+    if (isWithinTimeWindow_(eveningReviewTime) &&
+        !hasReminderFor_('EVENING-REVIEW', todayKey, eveningReviewTime)) {
+      sendEveningReview_();
+      recordReminder_('Evening review', 'EVENING-REVIEW', eveningReviewTime, 'Sent', 1);
     }
     if (isWithinTimeWindow_('09:00')) sendOverdueTaskReminders_(todayKey);
     processUpcomingAppointmentReminders_();
     runRoutineReminderSchedule_('ROUTINE-TRELLO', todayKey, sendTrelloCheckin_);
     runRoutineReminderSchedule_('ROUTINE-OBSIDIAN', todayKey, sendObsidianCheckin_);
-    const reviewTimes = ['22:30', '22:50', '23:15'];
-    const reviewTime = reviewTimes.find(item => isWithinTimeWindow_(item));
-    if (reviewTime && !getConfirmedRoutine_('ROUTINE-DAILY-REVIEW', now) &&
-        !hasReminderFor_('ROUTINE-DAILY-REVIEW', todayKey, reviewTime)) {
-      sendEveningReview_();
-      recordReminder_('Evening review', 'ROUTINE-DAILY-REVIEW', reviewTime, 'Sent', 1);
+    const shutdownTime = String(getSetting_('SHUTDOWN_TIME', '23:00'));
+    if (isWithinTimeWindow_(shutdownTime) && !hasReminderFor_('DAILY-SHUTDOWN', todayKey, shutdownTime)) {
+      sendShutdownPrompt_();
+      recordReminder_('Daily shutdown', 'DAILY-SHUTDOWN', shutdownTime, 'Sent', 1);
+    }
+    const nextDayPlanningTime = String(getSetting_('NEXT_DAY_PLANNING_TIME', '23:20'));
+    if (isWithinTimeWindow_(nextDayPlanningTime) && !hasReminderFor_('NEXT-DAY-PLANNING', todayKey, nextDayPlanningTime)) {
+      startNextDayPlanning_();
+      recordReminder_('Next-day planning conversation', 'NEXT-DAY-PLANNING', nextDayPlanningTime, 'Sent', 1);
     }
     if (time >= '23:30' && time <= '23:36') {
       ['ROUTINE-TRELLO', 'ROUTINE-OBSIDIAN'].forEach(routineId => {
@@ -162,7 +176,15 @@ function processScheduledFollowups_(now) {
       sheet.getRange(index + 1, 7).setValue('Cancelled');
       continue;
     }
-    if (row[2] === 'ROUTINE-DAILY-PLAN') {
+    if (row[1] === 'Focus sprint' && String(row[2]).startsWith('OUTCOME|')) {
+      const parts = String(row[2]).split('|');
+      if (parts.length !== 3 || !DAILY_OUTCOME_AREAS.includes(parts[2])) {
+        sheet.getRange(index + 1, 7).setValue('Failed');
+        logSystem_('ERROR', 'Reminders', 'Invalid focus reminder', 'A focus reminder has an invalid outcome reference.', null, row[0]);
+        continue;
+      }
+      sendOutcomeFollowup_(parts[1], parts[2]);
+    } else if (row[2] === 'ROUTINE-DAILY-PLAN') {
       sendDailyPlanningPrompt_();
     } else if (row[2] === 'ROUTINE-TRELLO') {
       sendTrelloCheckin_();
@@ -182,21 +204,39 @@ function sendOverdueTaskReminders_(todayKey) {
   const overdue = getOverdueTasks_();
   overdue.forEach(task => {
     const history = getSheet_(APP.SHEETS.REMINDER_HISTORY).getDataRange().getValues();
+    const reminderNumber = history.slice(1).filter(row =>
+      String(row[2]) === String(task[0]) && row[1] === 'Overdue task'
+    ).length + 1;
     const alreadySent = history.some((row, index) =>
       index > 0 && String(row[2]) === String(task[0]) && row[4] &&
       dateKey_(row[4]) === todayKey && row[6] === 'Sent'
     );
     if (alreadySent) return;
+    const keyboard = reminderNumber === 1
+      ? [[
+          { text: 'Done', callback_data: `task_complete|${task[1]}` },
+          { text: 'Postpone +1 day', callback_data: `task_postpone|${task[1]}|${addDaysDateKey_(1)}` }
+        ], [{ text: 'View details', callback_data: `task_details|${task[1]}` }]]
+      : reminderNumber === 2
+        ? [[
+            { text: 'Reschedule', callback_data: `task_reschedule|${task[1]}` },
+            { text: 'Mark blocked', callback_data: `task_block|${task[1]}` }
+          ], [{ text: 'Done', callback_data: `task_complete|${task[1]}` }]]
+        : [[
+            { text: 'Reschedule', callback_data: `task_reschedule|${task[1]}` },
+            { text: 'Reduce scope', callback_data: `task_reduce|${task[1]}` }
+          ], [{ text: 'Mark blocked', callback_data: `task_block|${task[1]}` }]];
     sendTelegramMessage_(
-      `<b>Overdue task follow-up</b>\n\n${escapeHtml_(task[2])}\n<b>Due:</b> ${escapeHtml_(task[7])}`,
-      [[
-        { text: 'Complete', callback_data: `task_complete|${task[1]}` },
-        { text: 'Postpone +1d', callback_data: `task_postpone|${task[1]}|${addDaysDateKey_(1)}` }
-      ]],
+      `<b>${reminderNumber === 1 ? 'A helpful nudge' : reminderNumber === 2 ? 'Choose a next step' : 'Final reminder — make a decision'}</b>\n\n` +
+        `<b>${escapeHtml_(task[2])}</b>\nDue: ${escapeHtml_(task[7])}\n\n` +
+        (reminderNumber >= 3
+          ? 'Please reschedule it, reduce its scope, or record what is blocking it.'
+          : 'This is still open. Choose the most useful honest next step.'),
+      keyboard,
       'Overdue task reminder',
       { taskId: task[0] }
     );
-    recordReminder_('Overdue task', task[0], now_(), 'Sent', 1);
+    recordReminder_('Overdue task', task[0], now_(), 'Sent', reminderNumber);
     updateTaskLastReminder_(task[0]);
   });
 }
@@ -233,6 +273,51 @@ function sendEveningReview_() {
       [{ text: 'Complete daily review', callback_data: 'daily_review_confirm' }]
     ],
     'Evening review'
+  );
+}
+
+function startWorkBriefing_() {
+  const chatId = requireConfig_(APP.PROPERTIES.TELEGRAM_CHAT_ID);
+  setTelegramConversation_(chatId, { type: 'work_briefing_target', date: dateKey_(now_()) });
+  sendForceReply_('<b>14:15 work pre-shift</b>\n\nWhat is your SDR target for this shift?', 'Work briefing');
+}
+
+function sendShutdownPrompt_() {
+  const outcomes = getDailyOutcomes_(now_());
+  const status = outcomes.filter(row => row && ['Completed', 'Partial', 'Blocked'].includes(String(row[5])))
+    .map(row => `• ${row[1]} — ${escapeHtml_(row[5])}`).join('\n') || 'No outcomes closed yet.';
+  sendTelegramMessage_(
+    `<b>23:00 shutdown</b>\n\n<b>Outcome check</b>\n${status}\n\nCapture open loops in Google Tasks, or confirm there are none. Tomorrow’s guided planning starts at 23:20.`,
+    [
+      [getAddTaskButton_()],
+      [{ text: 'No open loops now', callback_data: 'shutdown_done' }]
+    ],
+    'Daily shutdown'
+  );
+}
+
+function sendOutcomeFollowup_(date, area) {
+  const outcomeDate = Utilities.parseDate(`${date} 12:00`, APP.TIMEZONE, 'yyyy-MM-dd HH:mm');
+  const outcome = getDailyOutcomes_(outcomeDate).find(row => row && row[1] === area);
+  if (!outcome) return;
+  sendTelegramMessage_(
+    `<b>${area} outcome is still open.</b>\n\n${escapeHtml_(truncateText_(outcome[2], 180))}\n\nChoose the honest next step.`,
+    [
+      [
+        { text: 'Done', callback_data: `outcome_status|${date}|${area}|Completed` },
+        { text: 'Partly done', callback_data: `outcome_status|${date}|${area}|Partial` }
+      ],
+      [
+        { text: 'Blocked', callback_data: `outcome_status|${date}|${area}|Blocked` },
+        { text: 'Reschedule', callback_data: `outcome_reschedule|${date}|${area}` }
+      ],
+      [
+        { text: 'Reduce scope', callback_data: `outcome_reduce|${date}|${area}` },
+        { text: 'Drop with reason', callback_data: `outcome_drop|${date}|${area}` }
+      ]
+    ],
+    'Focus block follow-up',
+    { taskId: outcome[4] }
   );
 }
 
