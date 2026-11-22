@@ -1,3 +1,5 @@
+const MINI_APP_LAUNCH_TTL_SECONDS = 900;
+
 function doGet(e) {
   if (!e || !e.parameter || e.parameter.view !== 'taskform') {
     return HtmlService.createHtmlOutput(
@@ -5,13 +7,28 @@ function doGet(e) {
       '<title>Productivity Assistant</title><p>Open this page from the Telegram bot.</p>'
     );
   }
-  return HtmlService.createHtmlOutputFromFile('TaskMiniAppLayout')
+  const launchToken = String(e.parameter.launch || '');
+  const launch = getMiniAppLaunch_(launchToken);
+  const template = HtmlService.createTemplateFromFile('TaskMiniAppLayout');
+  template.launchToken = launch ? launchToken : '';
+  return template.evaluate()
     .setTitle('Add a task')
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
 
-function submitTaskFromMiniApp(initData, payload) {
-  const telegramUserId = verifyTelegramMiniAppInitData_(initData);
+function submitTaskFromMiniApp(initData, payload, launchToken) {
+  const signedInitData = String(initData || '');
+  const fallbackLaunchToken = String(launchToken || '');
+  let telegramUserId = '';
+  if (signedInitData) {
+    telegramUserId = verifyTelegramMiniAppInitData_(signedInitData);
+  } else {
+    const launch = getMiniAppLaunch_(fallbackLaunchToken);
+    if (!launch) {
+      throw new Error('This task form session expired. Close it and open a fresh Add something button from the bot.');
+    }
+    telegramUserId = String(launch.userId);
+  }
   if (!isAuthorizedTelegramUser_(telegramUserId)) {
     throw new Error('This Telegram account is not authorized to add tasks.');
   }
@@ -53,6 +70,7 @@ function submitTaskFromMiniApp(initData, payload) {
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(10000)) throw new Error('Another request is being saved. Please try once more.');
   try {
+    if (!signedInitData) claimMiniAppLaunch_(fallbackLaunchToken, telegramUserId, requestId);
     const repeated = cache.get(requestKey);
     if (repeated && repeated !== 'processing') return JSON.parse(repeated);
     const requestSheet = getSheet_(APP.SHEETS.MINI_APP_REQUESTS);
@@ -143,6 +161,32 @@ function submitTaskFromMiniApp(initData, payload) {
     }
   } finally {
     lock.releaseLock();
+  }
+}
+
+function getMiniAppLaunch_(launchToken) {
+  if (!/^[a-f0-9]{32}$/i.test(String(launchToken || ''))) return null;
+  const launchText = CacheService.getScriptCache().get(`miniapp-launch:${launchToken}`);
+  if (!launchText) return null;
+  const launch = JSON.parse(launchText);
+  return launch && launch.userId ? launch : null;
+}
+
+function claimMiniAppLaunch_(launchToken, telegramUserId, requestId) {
+  const launch = getMiniAppLaunch_(launchToken);
+  if (!launch || String(launch.userId) !== String(telegramUserId)) {
+    throw new Error('This task form session is invalid or expired. Open a fresh Add something button from the bot.');
+  }
+  if (launch.requestId && String(launch.requestId) !== String(requestId)) {
+    throw new Error('This task form link was already used. Open a fresh Add something button from the bot.');
+  }
+  if (!launch.requestId) {
+    launch.requestId = requestId;
+    CacheService.getScriptCache().put(
+      `miniapp-launch:${launchToken}`,
+      JSON.stringify(launch),
+      MINI_APP_LAUNCH_TTL_SECONDS
+    );
   }
 }
 

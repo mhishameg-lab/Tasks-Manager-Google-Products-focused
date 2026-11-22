@@ -11,7 +11,7 @@ flowchart TD
     W -->|Authenticated POST| A[Apps Script doPost]
     A -->|Authorize and deduplicate| B[Apps Script assistant logic]
     U -->|Add something| M[Telegram Mini App]
-    M -->|Signed initData and task form| B
+    M -->|Signed initData or short-lived one-request launch token| B
     B <--> G[Google Tasks<br/>authoritative task status]
     B <--> S[Google Sheets<br/>outcomes, history, reviews, dashboard]
     B -->|Read appointments; create only after confirmation| C[Google Calendar]
@@ -40,7 +40,7 @@ flowchart LR
     G --> A
 ```
 
-The full task list remains available with `/tasks`, but the home screen centers on three outcomes: **DEEP** (growth), **WORK** (work/SDR), and **LIFE** (health or administration). Add a next action through **Add something**; the Mini App offers a date picker, area, priority, optional time block, a “done” test, and a Top 3 toggle. Calendar blocks are previews and are not created until confirmed in Telegram.
+The full task list remains available with `/tasks`, but the home screen centers on three outcomes: **DEEP** (growth), **WORK** (work/SDR), and **LIFE** (health or administration). Add a next action through **Add something**; the Mini App offers a date picker, area, priority, optional time block, a “done” test, and a Top 3 toggle. Launches prefer Telegram’s signed `initData`; a five-minute, single-request token attached to the private bot button is used only when Apps Script’s HTML sandbox does not expose that data. Reopen **Add something** to start a new task form session. Calendar blocks are previews and are not created until confirmed in Telegram.
 
 ## First-time setup
 

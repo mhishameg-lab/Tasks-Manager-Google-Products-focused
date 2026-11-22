@@ -28,6 +28,7 @@
   <body>
     <h1>Add something</h1>
     <p class="sub">Capture the next useful action. You can decide when to do it.</p>
+    <input id="launchToken" type="hidden" value="<?= launchToken ?>">
     <form id="taskForm">
       <label for="title">Task title <span aria-hidden="true">*</span></label>
       <input id="title" name="title" required maxlength="500" autocomplete="off" placeholder="What is the next action?">
@@ -74,6 +75,7 @@
     <script>
       const app = window.Telegram && window.Telegram.WebApp;
       if (app) { app.ready(); app.expand(); }
+      const launchToken = document.getElementById('launchToken').value;
       const form = document.getElementById('taskForm');
       const calendarToggle = document.getElementById('createCalendarBlock');
       const blockFields = document.getElementById('blockFields');
@@ -96,8 +98,8 @@
       }
       form.addEventListener('submit', event => {
         event.preventDefault();
-        if (!app || !app.initData) {
-          showStatus('Telegram did not provide secure launch data. Close this page and reopen it using Add something in the bot’s private chat.', true);
+        if ((!app || !app.initData) && !launchToken) {
+          showStatus('This task form session is missing or expired. Close it and open a fresh Add something button from the bot.', true);
           return;
         }
         const blockDate = document.getElementById('blockDate').value;
@@ -135,16 +137,16 @@
               ? `Task saved, but the bot notification failed. No Calendar event was created. Reference: ${result.notificationReference || 'check System_Logs'}.`
               : 'Task added. Check the bot chat for the Calendar confirmation, if selected.';
             showStatus(message, Boolean(notificationFailed));
-            if (app.HapticFeedback) app.HapticFeedback.notificationOccurred('success');
+            if (app && app.HapticFeedback) app.HapticFeedback.notificationOccurred('success');
             submit.textContent = notificationFailed ? 'Saved' : 'Added';
-            if (!notificationFailed) setTimeout(() => app.close(), 900);
+            if (!notificationFailed && app && typeof app.close === 'function') setTimeout(() => app.close(), 900);
           })
           .withFailureHandler(error => {
             submit.disabled = false;
             showStatus(error && error.message ? error.message : 'Could not save this task. Please retry.', true);
-            if (app.HapticFeedback) app.HapticFeedback.notificationOccurred('error');
+            if (app && app.HapticFeedback) app.HapticFeedback.notificationOccurred('error');
           })
-          .submitTaskFromMiniApp(app.initData, payload);
+          .submitTaskFromMiniApp(app && app.initData || '', payload, launchToken);
       });
     </script>
   </body>

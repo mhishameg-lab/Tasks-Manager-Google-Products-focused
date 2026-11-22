@@ -598,6 +598,15 @@ function processTelegramCallback_(callbackQuery) {
       responseKeyboard = [[getAddTaskButton_()], [{ text: 'Back to home', callback_data: 'home_menu' }]];
     }
 
+    else if (action.startsWith('tasks_page|')) {
+      syncGoogleTasks();
+      const offset = Number(action.split('|')[1]);
+      if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('Task list page is invalid.');
+      const taskList = buildTaskListView_(offset);
+      response = taskList.text;
+      responseKeyboard = taskList.keyboard;
+    }
+
     else if (action.startsWith('plan_view_date|')) {
       const date = action.split('|')[1];
       if (!isValidDateKey_(date)) throw new Error('Requested plan date is invalid.');
@@ -657,10 +666,32 @@ function processTelegramCallback_(callbackQuery) {
     }
 
     else if (action.startsWith('task_details|')) {
-      const task = getTaskRecordByGoogleId_(action.split('|')[1]);
-      response = task
-        ? `<b>${escapeHtml_(task[2])}</b>\n\n<b>Status:</b> ${escapeHtml_(task[4])}\n<b>Priority:</b> ${escapeHtml_(task[5])}\n<b>Due:</b> ${escapeHtml_(task[7] || 'Not set')}\n\n${escapeHtml_(task[3] || 'No description.')}`
-        : '<b>Task not found.</b>';
+      const parts = action.split('|');
+      const task = getTaskRecordByGoogleId_(parts[1]);
+      const pageOffset = Number(parts[2] || 0);
+      if (!Number.isSafeInteger(pageOffset) || pageOffset < 0) throw new Error('Task list page is invalid.');
+      if (task) {
+        response = `<b>${escapeHtml_(task[2])}</b>\n\n` +
+          `<b>Status</b>  ${escapeHtml_(task[4])}\n` +
+          `<b>Priority</b>  ${escapeHtml_(task[5] || 'Medium')}\n` +
+          `<b>Due</b>  ${escapeHtml_(task[7] || 'No deadline')}\n\n` +
+          `${escapeHtml_(task[3] || 'No extra details.')}`;
+        responseKeyboard = [
+          [
+            { text: 'Complete', callback_data: `task_complete|${task[1]}` },
+            { text: 'Keep pending', callback_data: `task_keep|${task[1]}` }
+          ],
+          [
+            { text: 'Postpone 1 day', callback_data: `task_postpone|${task[1]}|${addDaysDateKey_(1)}` },
+            { text: 'Reschedule', callback_data: `task_reschedule|${task[1]}` }
+          ],
+          [{ text: 'Cancel task', callback_data: `task_cancel_prompt|${task[1]}` }],
+          [{ text: 'Back to task list', callback_data: `tasks_page|${pageOffset}` }]
+        ];
+      } else {
+        response = '<b>Task not found.</b>';
+        responseKeyboard = [[{ text: 'Back to task list', callback_data: `tasks_page|${pageOffset}` }]];
+      }
     }
 
     else if (action.startsWith('task_postpone|')) {
@@ -1173,32 +1204,78 @@ function sendTelegramMessage_(text, keyboard, category, metadata, replyMarkup) {
 
 function sendTaskList_() {
   syncGoogleTasks();
+  const taskList = buildTaskListView_(0);
+  sendTelegramMessage_(taskList.text, taskList.keyboard, 'Task list');
+}
+
+function buildTaskListView_(offset) {
+  const pageSize = 8;
+  const today = dateKey_(now_());
   const rows = getSheet_(APP.SHEETS.TASKS).getDataRange().getValues().slice(1)
-    .filter(row => row[4] === 'Pending' && row[1])
-    .slice(0, 8);
+    .filter(row => row[4] === 'Pending' && row[1]);
+  const priorityRank = { High: 0, Medium: 1, Low: 2 };
+  rows.sort((left, right) => {
+    const leftDue = normalizeDateKey_(left[7]);
+    const rightDue = normalizeDateKey_(right[7]);
+    const leftGroup = !leftDue ? 3 : leftDue < today ? 0 : leftDue === today ? 1 : 2;
+    const rightGroup = !rightDue ? 3 : rightDue < today ? 0 : rightDue === today ? 1 : 2;
+    if (leftGroup !== rightGroup) return leftGroup - rightGroup;
+    if (leftDue && rightDue && leftDue !== rightDue) return leftDue.localeCompare(rightDue);
+    return (priorityRank[left[5]] == null ? 1 : priorityRank[left[5]]) -
+      (priorityRank[right[5]] == null ? 1 : priorityRank[right[5]]);
+  });
+
   if (!rows.length) {
-    sendTelegramMessage_('<b>Pending tasks</b>\n\nNo pending tasks are recorded.', [
-      [{ text: 'Add task', callback_data: 'task_add_help' }]
-    ], 'Task list');
-    return;
+    return {
+      text: '<b>Your open tasks</b>\n\nYou’re all clear — there are no pending tasks.',
+      keyboard: [[getAddTaskButton_()], [{ text: 'Back to home', callback_data: 'home_menu' }]]
+    };
   }
+
+  const safeOffset = Math.min(Math.floor(offset / pageSize) * pageSize, Math.floor((rows.length - 1) / pageSize) * pageSize);
+  const pageRows = rows.slice(safeOffset, safeOffset + pageSize);
+  const groups = [
+    { key: 'overdue', title: 'OVERDUE', matches: row => normalizeDateKey_(row[7]) && normalizeDateKey_(row[7]) < today },
+    { key: 'today', title: 'DUE TODAY', matches: row => normalizeDateKey_(row[7]) === today },
+    { key: 'upcoming', title: 'UPCOMING', matches: row => normalizeDateKey_(row[7]) > today },
+    { key: 'no_date', title: 'NO DEADLINE', matches: row => !normalizeDateKey_(row[7]) }
+  ];
   const keyboard = [];
-  const taskText = rows.map((row, index) => {
-    const title = escapeHtml_(row[2]);
-    const due = row[7] ? ` — due ${escapeHtml_(row[7])}` : '';
-    keyboard.push([
-      { text: `${index + 1} Complete`, callback_data: `task_complete|${row[1]}` },
-      { text: `${index + 1} Details`, callback_data: `task_details|${row[1]}` },
-      { text: `${index + 1} Keep pending`, callback_data: `task_keep|${row[1]}` }
-    ]);
-    keyboard.push([
-      { text: `${index + 1} Postpone +1d`, callback_data: `task_postpone|${row[1]}|${addDaysDateKey_(1)}` },
-      { text: `${index + 1} Reschedule`, callback_data: `task_reschedule|${row[1]}` },
-      { text: `${index + 1} Cancel`, callback_data: `task_cancel_prompt|${row[1]}` }
-    ]);
-    return `${index + 1}. <b>${title}</b>${due} — ${escapeHtml_(row[5] || 'Medium')} priority`;
-  }).join('\n');
-  sendTelegramMessage_(`<b>Pending tasks</b>\n\n${taskText}`, keyboard, 'Task list');
+  const sections = [];
+  let visibleIndex = safeOffset;
+  groups.forEach(group => {
+    const groupRows = pageRows.filter(group.matches);
+    if (!groupRows.length) return;
+    const entries = groupRows.map(row => {
+      visibleIndex++;
+      const dueDate = normalizeDateKey_(row[7]);
+      const dateLabel = dueDate
+        ? ` · ${escapeHtml_(dueDate)}`
+        : '';
+      const title = escapeHtml_(truncateText_(row[2] || 'Untitled task', 100));
+      const priority = escapeHtml_(String(row[5] || 'Medium').toUpperCase());
+      keyboard.push([{
+        text: `View ${visibleIndex} · ${truncateText_(row[2] || 'Task', 24)}`,
+        callback_data: `task_details|${row[1]}|${safeOffset}`
+      }]);
+      return `${visibleIndex}. <b>${title}</b>\n   ${priority} priority${dateLabel}`;
+    });
+    sections.push(`<b>${group.title} · ${groupRows.length}</b>\n${entries.join('\n\n')}`);
+  });
+
+  const end = Math.min(safeOffset + pageRows.length, rows.length);
+  const footer = `Showing ${safeOffset + 1}–${end} of ${rows.length} pending`;
+  const navigation = [];
+  if (safeOffset > 0) navigation.push({ text: '‹ Previous', callback_data: `tasks_page|${safeOffset - pageSize}` });
+  if (end < rows.length) navigation.push({ text: 'Next ›', callback_data: `tasks_page|${end}` });
+  if (navigation.length) keyboard.push(navigation);
+  keyboard.push([getAddTaskButton_()]);
+  keyboard.push([{ text: 'Back to home', callback_data: 'home_menu' }]);
+
+  return {
+    text: `<b>Your open tasks</b>\n<i>${footer}</i>\n\n${sections.join('\n\n')}`,
+    keyboard: keyboard
+  };
 }
 
 function sendDailyPlanningPrompt_() {

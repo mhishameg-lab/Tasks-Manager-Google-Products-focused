@@ -28,7 +28,14 @@ function getTaskMiniAppUrl_() {
   if (!webAppUrl || !/^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec(?:\?.*)?$/.test(webAppUrl)) {
     return '';
   }
-  return `${webAppUrl.split('?')[0]}?view=taskform`;
+  const launchToken = Utilities.getUuid().replace(/-/g, '');
+  const authorizedUserId = requireConfig_(APP.PROPERTIES.AUTHORIZED_TELEGRAM_USER_ID);
+  CacheService.getScriptCache().put(
+    `miniapp-launch:${launchToken}`,
+    JSON.stringify({ userId: authorizedUserId, requestId: '' }),
+    MINI_APP_LAUNCH_TTL_SECONDS
+  );
+  return `${webAppUrl.split('?')[0]}?view=taskform&launch=${encodeURIComponent(launchToken)}`;
 }
 
 function getAddTaskButton_() {
