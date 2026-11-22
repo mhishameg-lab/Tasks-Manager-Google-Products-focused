@@ -1,4 +1,5 @@
 const MANAGED_TRIGGER_HANDLERS = [
+  'runTelegramPollingCycle',
   'syncGoogleTasks',
   'runReminderCycle',
   'runDailyReview',
@@ -18,6 +19,7 @@ function installTriggers() {
       }
     });
     const created = [];
+    created.push(ScriptApp.newTrigger('runTelegramPollingCycle').timeBased().everyMinutes(1).create());
     created.push(ScriptApp.newTrigger('syncGoogleTasks').timeBased().everyHours(1).create());
     created.push(ScriptApp.newTrigger('runReminderCycle').timeBased().everyMinutes(5).create());
     created.push(ScriptApp.newTrigger('runDailyReview').timeBased().atHour(23).nearMinute(30).everyDays(1).inTimezone(APP.TIMEZONE).create());
@@ -176,11 +178,10 @@ function runSystemHealthCheck() {
     requireConfig_(APP.PROPERTIES.TELEGRAM_BOT_TOKEN);
     requireConfig_(APP.PROPERTIES.TELEGRAM_CHAT_ID);
     requireConfig_(APP.PROPERTIES.AUTHORIZED_TELEGRAM_USER_ID);
-    requireConfig_('WEBHOOK_SECRET');
-    const webAppUrl = requireConfig_(APP.PROPERTIES.WEB_APP_URL);
-    if (!webAppUrl.includes('/exec')) throw new Error('WEB_APP_URL is not a deployed /exec URL.');
     const webhook = getTelegramWebhookInfo();
-    result.telegram = webhook.configured ? 'OK' : 'Webhook not configured';
+    result.telegram = webhook.configured
+      ? 'Webhook still configured; run enableTelegramPolling()'
+      : 'OK — polling mode';
     result.email = Session.getEffectiveUser().getEmail() ? 'OK' : 'Recipient unavailable';
     result.emailQuota = MailApp.getRemainingDailyQuota();
 

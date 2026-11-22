@@ -1,4 +1,5 @@
 function handleTelegramMessage_(message) {
+  if (isDuplicateTelegramMessage_(message.chat.id, message.message_id)) return;
   const text = (message.text || '').trim();
   const commandMatch = text.match(/^\/([a-z0-9_]+)(?:@\w+)?/i);
   const command = commandMatch ? `/${commandMatch[1].toLowerCase()}` : '';
@@ -563,29 +564,11 @@ function sendTomorrowPlan_() {
   sendTelegramMessage_(message, keyboard, 'Tomorrow planning');
 }
 
-function setTelegramWebhook() {
-  return telegramRequest_('setWebhook', {
-    url: getConfiguredTelegramWebhookUrl_(),
-    drop_pending_updates: false,
-    allowed_updates: ['message', 'callback_query']
-  });
-}
-
-function getConfiguredTelegramWebhookUrl_() {
-  const url = requireConfig_(APP.PROPERTIES.WEB_APP_URL);
-  const secret = requireConfig_('WEBHOOK_SECRET');
-  if (!url || !url.includes('/exec')) {
-    throw new Error('Add WEB_APP_URL using the deployed Web App URL ending in /exec.');
-  }
-  return `${url}${url.includes('?') ? '&' : '?'}key=${encodeURIComponent(secret)}`;
-}
-
 function getTelegramWebhookInfo() {
   const info = telegramRequest_('getWebhookInfo', {});
   const allowedUpdates = info.allowed_updates || [];
   return {
     configured: Boolean(info.url),
-    matchesConfiguredUrl: Boolean(info.url) && info.url === getConfiguredTelegramWebhookUrl_(),
     allowed_updates: allowedUpdates,
     receivesMessages: allowedUpdates.includes('message'),
     receivesCallbacks: allowedUpdates.includes('callback_query'),
@@ -595,10 +578,123 @@ function getTelegramWebhookInfo() {
   };
 }
 
-function runTelegramWebhookDiagnostics() {
+function enableTelegramPolling() {
+  return withScriptLock_(() => {
+    telegramRequest_('deleteWebhook', { drop_pending_updates: true });
+    const webhook = telegramRequest_('getWebhookInfo', {});
+    if (webhook.url) {
+      throw new Error('Telegram still has a webhook configured. Polling cannot start until it is removed.');
+    }
+
+    PropertiesService.getScriptProperties().deleteProperty('TELEGRAM_UPDATE_OFFSET');
+    let pollingTriggerCreated = false;
+    const pollingTriggers = ScriptApp.getProjectTriggers().filter(trigger =>
+      trigger.getHandlerFunction() === 'runTelegramPollingCycle'
+    );
+    if (!pollingTriggers.length) {
+      ScriptApp.newTrigger('runTelegramPollingCycle').timeBased().everyMinutes(1).create();
+      pollingTriggerCreated = true;
+    } else {
+      pollingTriggers.slice(1).forEach(trigger => ScriptApp.deleteTrigger(trigger));
+    }
+
+    logSystem_(
+      'INFO',
+      'Telegram polling',
+      'Enabled',
+      `Polling enabled. Pending Telegram updates were cleared. Trigger ${pollingTriggerCreated ? 'created' : 'verified'}.`
+    );
+    return {
+      pollingEnabled: true,
+      webhookDisabled: true,
+      pendingUpdatesCleared: true,
+      pollingTriggerCreated: pollingTriggerCreated
+    };
+  });
+}
+
+function runTelegramPollingCycle() {
+  return withScriptLock_(() => {
+    try {
+      return runTelegramPollingCycle_();
+    } catch (error) {
+      logSystem_('ERROR', 'Telegram polling', 'Cycle failed', 'Telegram polling cycle failed.', error);
+      throw error;
+    }
+  });
+}
+
+function runTelegramPollingCycle_() {
+  const webhook = telegramRequest_('getWebhookInfo', {});
+  if (webhook.url) {
+    throw new Error('Telegram webhook is still configured. Run enableTelegramPolling() before polling.');
+  }
+
+  const properties = PropertiesService.getScriptProperties();
+  const offsetValue = Number(properties.getProperty('TELEGRAM_UPDATE_OFFSET') || 0);
+  if (!Number.isSafeInteger(offsetValue) || offsetValue < 0) {
+    throw new Error('Telegram polling offset is invalid. Run enableTelegramPolling() to reset it.');
+  }
+
+  const updates = telegramRequest_('getUpdates', {
+    offset: offsetValue,
+    limit: 10,
+    timeout: 0,
+    allowed_updates: ['message', 'callback_query']
+  });
+  if (!Array.isArray(updates)) {
+    throw new Error('Telegram getUpdates returned an invalid update list.');
+  }
+
+  updates.forEach(update => {
+    try {
+      if (update.callback_query) {
+        processTelegramCallback_(update.callback_query);
+      } else if (update.message) {
+        handleTelegramMessage_(update.message);
+      } else if (!update.message) {
+        logSystem_('INFO', 'Telegram polling', 'Ignored update', 'Update type is not handled.');
+      }
+    } catch (error) {
+      logSystem_('ERROR', 'Telegram polling', 'Update processing failed', 'Could not process a Telegram update.', error);
+      if (update.message && update.message.from &&
+          isAuthorizedTelegramUser_(update.message.from.id)) {
+        try {
+          sendTelegramMessage_(
+            '<b>That request could not be completed.</b>\n\nCheck the command format or try again. The error has been logged.',
+            null,
+            'Request failure'
+          );
+        } catch (deliveryError) {
+          logSystem_('ERROR', 'Telegram polling', 'Failure notice', 'Could not send request failure feedback.', deliveryError);
+        }
+      }
+    }
+
+    if (!Number.isSafeInteger(Number(update.update_id))) {
+      throw new Error('Telegram update did not contain a valid update_id.');
+    }
+    properties.setProperty('TELEGRAM_UPDATE_OFFSET', String(Number(update.update_id) + 1));
+  });
+
+  if (updates.length) {
+    logSystem_('INFO', 'Telegram polling', 'Cycle completed', `Processed ${updates.length} Telegram update(s).`);
+  }
+  return updates.length;
+}
+
+function runTelegramPollingDiagnostics() {
   const diagnostics = getTelegramWebhookInfo();
-  console.log(JSON.stringify(diagnostics));
-  return diagnostics;
+  const triggers = ScriptApp.getProjectTriggers();
+  const result = {
+    webhookDisabled: !diagnostics.configured,
+    pollingTriggerInstalled: triggers.some(trigger =>
+      trigger.getHandlerFunction() === 'runTelegramPollingCycle'
+    ),
+    pendingUpdateCount: diagnostics.pending_update_count
+  };
+  console.log(JSON.stringify(result));
+  return result;
 }
 
 function sendTelegramMessage_(text, keyboard, category, metadata) {

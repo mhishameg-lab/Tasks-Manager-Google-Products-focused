@@ -6,8 +6,10 @@ A personal productivity and accountability assistant built with Google Apps Scri
 
 ```mermaid
 flowchart TD
-    U[You in Telegram] -->|Commands and button confirmations| W[Apps Script web app]
-    W -->|Authorized, deduplicated updates| A[Assistant logic]
+    U[You in Telegram] -->|Commands and button confirmations| TGB[Telegram Bot API]
+    P[One-minute Apps Script trigger] -->|getUpdates polling| TGB
+    TGB -->|Updates| P
+    P -->|Authorized, deduplicated updates| A[Assistant logic]
     A <--> T[Google Tasks<br/>authoritative task status]
     A <--> S[Google Sheets<br/>database, history, dashboard]
     A -->|Read appointments| C[Google Calendar]
@@ -15,7 +17,7 @@ flowchart TD
     A -->|Reminders and reports| U
     A -->|Escalations and reports| G[Gmail]
     A -->|Manual check-in prompts| M[Trello and Obsidian]
-    P[Time-driven triggers] --> A
+    P --> A
 ```
 
 Google Tasks determines task status. Sheets keeps synchronized records, logs, reviews, and history. Telegram delivery alone is never treated as task completion. Calendar events are created only after you confirm a Telegram preview.
@@ -35,8 +37,8 @@ Complete these steps in order. The project does not automatically deploy itself 
    - `SPREADSHEET_ID`
    - `TELEGRAM_BOT_TOKEN`
    - `TELEGRAM_CHAT_ID`
-   - `WEBHOOK_SECRET`
-   - `WEB_APP_URL`
+
+   Telegram polling uses the bot token, chat ID, and authorized user ID. The existing `WEBHOOK_SECRET` and `WEB_APP_URL` properties are not used in polling mode; leave them untouched.
 
 ### 2. Create and verify the database
 
@@ -47,19 +49,19 @@ Complete these steps in order. The project does not automatically deploy itself 
 
 Setup preserves existing records and refuses to overwrite an unexpected header. Resolve any header error before continuing.
 
-### 3. Deploy the Telegram web app
+### 3. Switch Telegram to Apps Script polling
 
-1. In Apps Script, select **Deploy → Manage deployments**.
-2. Edit the Web App deployment, select **New version**, choose **Execute as: Me**, and set access to **Anyone** so Telegram can reach the endpoint.
-3. Save the deployed `/exec` URL in the existing `WEB_APP_URL` Script Property. Do not include the webhook secret in that property.
-4. Run `setTelegramWebhook()` from the editor.
-5. Run `runTelegramWebhookDiagnostics()` and open its execution log. Confirm `matchesConfiguredUrl`, `receivesMessages`, and `receivesCallbacks` are all `true`, and `last_error_message` is empty. The diagnostic deliberately does not print the webhook URL or its secret.
+1. In the Apps Script editor, run `enableTelegramPolling()`. This removes the webhook, clears Telegram's pending update queue, and installs a one-minute polling trigger. Clearing the queue prevents old button actions accumulated during webhook failures from running unexpectedly.
+2. Run `runTelegramPollingDiagnostics()` and open its execution log. Confirm `webhookDisabled` and `pollingTriggerInstalled` are `true`, and `pendingUpdateCount` is `0`.
+3. Send `/start` to the bot. Polling is trigger-driven, so delivery is not immediate; allow a minute or two, then check Telegram_Messages and Apps Script **Executions**.
 
-The registered webhook URL uses the existing secret. Treat deployment and execution logs as private. After code changes, deploy a new version; rerun `setTelegramWebhook()` if the deployment URL changes.
+Do not run `setTelegramWebhook()` or manually run `doPost()`. Telegram polling does not require a Web App deployment. Inline-button actions can also be delayed until the next polling run, and Telegram's temporary click indicator may expire before the bot replies; the action result is sent as a normal chat message.
 
-### 4. Test manually before enabling triggers
+Polling is used because Apps Script's [Content service redirects responses](https://developers.google.com/apps-script/guides/content#redirects), and Telegram reported `302 Found` for the webhook. The polling trigger calls Telegram's `getUpdates` API directly instead.
 
-1. From the authorized Telegram account, try `/start`, `/help`, `/today`, `/tasks`, and `/review`.
+### 4. Test manually before enabling all scheduled automation
+
+1. After polling is enabled, send `/start`, `/help`, `/today`, `/tasks`, and `/review` from the authorized Telegram account.
 2. Check incoming/outgoing messages in Telegram_Messages and callback results in Telegram_Actions.
 3. Confirm a routine button once, then verify its exact confirmation timestamp in Accountability_Checkins. Check replay protection by repeating a callback.
 4. Use a disposable task to test creation, completion, postponement, and cancellation. Cancellation requires a second explicit confirmation.
@@ -72,7 +74,7 @@ Do not test task deletion or completion with real commitments.
 ### 5. Turn on scheduled automation
 
 1. Run `installTriggers()`.
-2. In Apps Script, open **Triggers** and verify all managed handlers appear.
+2. In Apps Script, open **Triggers** and verify `runTelegramPollingCycle` and all other managed handlers appear.
 3. Review **Executions** after the next scheduled runs. Run `runSystemHealthCheck()` again.
 4. If needed, use `removeTriggers()` to remove only this project's managed triggers.
 
@@ -99,7 +101,7 @@ Routine times, reminder limits, and scoring weights are managed in the Settings 
 - **Configuration and helpers:** `Config.gs`, `Utilities.gs`, `Logger.gs`
 - **Database and dashboard:** `Database.gs`, `DatabaseSetup.gs`
 - **Google services:** `GoogleTasks.gs`, `Calendar.gs`
-- **Telegram interface:** `Telegram.gs`, `TelegramWebhook.gs`
+- **Telegram interface and polling:** `Telegram.gs`
 - **Accountability and reminders:** `Accountability.gs`, `Reminders.gs`
 - **Reports, email, operations:** `Reports.gs`, `EmailEscalation.gs`, `Setup.gs`
 - **Runtime settings:** `appsscript.json`
@@ -119,11 +121,10 @@ Routine times, reminder limits, and scoring weights are managed in the Settings 
 
 - **Missing tab or header:** run `setupDatabase()` again. It adds missing structure but will stop if an existing header does not match.
 - **Google Tasks sync fails:** verify Google Tasks Advanced Service v1 and its Cloud API are enabled, and that the configured task list is accessible.
-- **Telegram gets no updates:** verify the `/exec` deployment URL, redeploy if needed, run `setTelegramWebhook()`, and inspect the sanitized `getTelegramWebhookInfo()` result.
-- **No Telegram_Messages row after `/start`:** run `runTelegramWebhookDiagnostics()` and check that `matchesConfiguredUrl` and `receivesMessages` are `true`. If either is false, confirm `WEB_APP_URL` refers to the current deployment in this same Apps Script project, then run `setTelegramWebhook()` again. Do not run `doPost()` manually; it needs the request event Telegram supplies and a manual editor run does not simulate delivery.
-- **A button click gets no chat reply:** deploy the latest code, run `setTelegramWebhook()`, and check Telegram_Actions for the callback result plus Apps Script **Executions** and System_Logs for errors. Failed callback rows include the sanitized error and its System_Logs reference. Button clicks are acknowledged immediately; the action result is sent as a separate chat message.
-- **`/start` or `/help` creates no Telegram_Messages row:** check the latest `doPost` execution and `getTelegramWebhookInfo()`. Confirm the deployed URL is the latest `/exec` version, `allowed_updates` includes `message`, and there is no webhook error. If Telegram_Messages has a row marked `Rejected`, the sender does not match the authorized Telegram user ID.
+- **Telegram gets no updates:** run `runTelegramPollingDiagnostics()`. Confirm the webhook is disabled and the polling trigger is installed; then inspect Apps Script **Executions** for `runTelegramPollingCycle`.
+- **No Telegram_Messages row after `/start`:** confirm `enableTelegramPolling()` completed, the one-minute `runTelegramPollingCycle` trigger exists, and the next execution succeeded. Do not run `doPost()` manually; polling does not use it.
+- **A button action seems delayed:** polling runs on a time-driven trigger, so actions may take a minute or more. Check Telegram_Actions, then Apps Script **Executions** and System_Logs for errors. Telegram's click indicator may expire before the action result arrives in the chat.
 - **Command is rejected:** use the Telegram account whose numeric user ID matches the existing `AUTHORIZED_TELEGRAM_USER_ID`.
 - **Email is not delivered:** authorize email access, check the script's effective-user email and sending quota, then inspect Email_Escalations, Sync_Logs, and System_Logs.
 - **Scheduled jobs do not run:** check Apps Script **Triggers** and **Executions**, run `runSystemHealthCheck()`, and reinstall with `installTriggers()` if appropriate.
-- **A function is missing from the Run menu:** names ending in `_` are private helpers. Run the public entry points such as `setupDatabase`, `syncGoogleTasks`, `setTelegramWebhook`, `installTriggers`, `removeTriggers`, and `runSystemHealthCheck`.
+- **A function is missing from the Run menu:** names ending in `_` are private helpers. Run the public entry points such as `setupDatabase`, `syncGoogleTasks`, `enableTelegramPolling`, `runTelegramPollingDiagnostics`, `installTriggers`, `removeTriggers`, and `runSystemHealthCheck`.

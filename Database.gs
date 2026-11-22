@@ -38,6 +38,17 @@ function logTelegramMessage_(data) {
   ]);
 }
 
+function isDuplicateTelegramMessage_(chatId, messageId) {
+  if (chatId == null || messageId == null) return false;
+  const sheet = getSheet_(APP.SHEETS.TELEGRAM_MESSAGES);
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return false;
+  return sheet.getRange(2, 2, lastRow - 1, 2).getValues().some(row =>
+    String(row[0]) === String(chatId) &&
+    String(row[1]) === String(messageId)
+  );
+}
+
 function logTelegramAction_(data) {
   const sheet = getSheet_('Telegram_Actions');
   const row = [
