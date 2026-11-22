@@ -319,7 +319,8 @@ function seedRoutines_() {
 }
 
 function buildDashboard_(sheet) {
-  sheet.getMergedRanges().forEach(range => range.breakApart());
+  sheet.getRange(1, 1, 44, 13).getMergedRanges()
+    .forEach(range => range.breakApart());
   sheet.clearContents();
   sheet.clearFormats();
   sheet.getCharts().forEach(chart => sheet.removeChart(chart));
