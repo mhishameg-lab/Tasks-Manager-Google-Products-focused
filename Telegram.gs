@@ -564,29 +564,41 @@ function sendTomorrowPlan_() {
 }
 
 function setTelegramWebhook() {
-  const url = requireConfig_(APP.PROPERTIES.WEB_APP_URL);
-  const secret = requireConfig_('WEBHOOK_SECRET');
-
-  if (!url || !url.includes('/exec')) {
-    throw new Error('Add WEB_APP_URL using the deployed Web App URL ending in /exec.');
-  }
-
   return telegramRequest_('setWebhook', {
-    url: `${url}${url.includes('?') ? '&' : '?'}key=${encodeURIComponent(secret)}`,
+    url: getConfiguredTelegramWebhookUrl_(),
     drop_pending_updates: false,
     allowed_updates: ['message', 'callback_query']
   });
 }
 
+function getConfiguredTelegramWebhookUrl_() {
+  const url = requireConfig_(APP.PROPERTIES.WEB_APP_URL);
+  const secret = requireConfig_('WEBHOOK_SECRET');
+  if (!url || !url.includes('/exec')) {
+    throw new Error('Add WEB_APP_URL using the deployed Web App URL ending in /exec.');
+  }
+  return `${url}${url.includes('?') ? '&' : '?'}key=${encodeURIComponent(secret)}`;
+}
+
 function getTelegramWebhookInfo() {
   const info = telegramRequest_('getWebhookInfo', {});
+  const allowedUpdates = info.allowed_updates || [];
   return {
     configured: Boolean(info.url),
-    allowed_updates: info.allowed_updates || [],
+    matchesConfiguredUrl: Boolean(info.url) && info.url === getConfiguredTelegramWebhookUrl_(),
+    allowed_updates: allowedUpdates,
+    receivesMessages: allowedUpdates.includes('message'),
+    receivesCallbacks: allowedUpdates.includes('callback_query'),
     pending_update_count: info.pending_update_count || 0,
     last_error_date: info.last_error_date || null,
-    last_error_message: info.last_error_message || ''
+    last_error_message: redactSensitiveText_(info.last_error_message || '')
   };
+}
+
+function runTelegramWebhookDiagnostics() {
+  const diagnostics = getTelegramWebhookInfo();
+  console.log(JSON.stringify(diagnostics));
+  return diagnostics;
 }
 
 function sendTelegramMessage_(text, keyboard, category, metadata) {
