@@ -187,22 +187,20 @@ function processTelegramCallback_(callbackQuery) {
   let result = 'Completed';
   let response = '';
   let actionLogRow;
+  let callbackAcknowledged = false;
 
   try {
     if (typeof isDuplicateCallback_ === 'function' &&
         isDuplicateCallback_(callbackQuery.id)) {
-      telegramRequest_('answerCallbackQuery', {
-        callback_query_id: callbackQuery.id,
-        text: 'This action was already processed.'
-      });
+      callbackAcknowledged = acknowledgeTelegramCallback_(
+        callbackQuery.id,
+        'This action was already processed.'
+      );
       return;
     }
 
     if (!isAuthorizedTelegramUser_(callbackQuery.from.id)) {
-      telegramRequest_('answerCallbackQuery', {
-        callback_query_id: callbackQuery.id,
-        text: 'Not authorized.'
-      });
+      callbackAcknowledged = acknowledgeTelegramCallback_(callbackQuery.id, 'Not authorized.');
       logTelegramAction_({
         telegramUserId: callbackQuery.from.id,
         callbackQueryId: callbackQuery.id,
@@ -220,6 +218,7 @@ function processTelegramCallback_(callbackQuery) {
       actionName: action,
       actionResult: 'Processing'
     });
+    callbackAcknowledged = acknowledgeTelegramCallback_(callbackQuery.id, 'Processing your request…');
 
     if (action === 'day_start') {
       response =
@@ -435,22 +434,12 @@ function processTelegramCallback_(callbackQuery) {
       result = 'Unavailable';
     }
 
-    telegramRequest_('answerCallbackQuery', {
-      callback_query_id: callbackQuery.id,
-      text: result
-    });
-
   } catch (error) {
     result = 'Failed';
     logSystem_('ERROR', 'Telegram', 'Callback', 'Callback processing failed.', error);
     response = '<b>Action could not be completed.</b>\n\nPlease try again. The issue has been logged.';
-    try {
-      telegramRequest_('answerCallbackQuery', {
-        callback_query_id: callbackQuery.id,
-        text: 'Action failed.'
-      });
-    } catch (answerError) {
-      logSystem_('ERROR', 'Telegram', 'Callback acknowledgement', 'Could not acknowledge callback.', answerError);
+    if (!callbackAcknowledged) {
+      callbackAcknowledged = acknowledgeTelegramCallback_(callbackQuery.id, 'Action failed.');
     }
   }
 
@@ -459,6 +448,25 @@ function processTelegramCallback_(callbackQuery) {
   }
 
   if (response) sendTelegramMessage_(response, null, 'Button action');
+}
+
+function acknowledgeTelegramCallback_(callbackQueryId, text) {
+  try {
+    telegramRequest_('answerCallbackQuery', {
+      callback_query_id: callbackQueryId,
+      text: text
+    });
+    return true;
+  } catch (error) {
+    logSystem_(
+      'WARNING',
+      'Telegram',
+      'Callback acknowledgement',
+      'Could not acknowledge the button click promptly.',
+      error
+    );
+    return false;
+  }
 }
 
 function sendTodayBriefing_(skipSync) {
@@ -560,7 +568,8 @@ function setTelegramWebhook() {
 
   return telegramRequest_('setWebhook', {
     url: `${url}${url.includes('?') ? '&' : '?'}key=${encodeURIComponent(secret)}`,
-    drop_pending_updates: false
+    drop_pending_updates: false,
+    allowed_updates: ['message', 'callback_query']
   });
 }
 
@@ -568,6 +577,7 @@ function getTelegramWebhookInfo() {
   const info = telegramRequest_('getWebhookInfo', {});
   return {
     configured: Boolean(info.url),
+    allowed_updates: info.allowed_updates || [],
     pending_update_count: info.pending_update_count || 0,
     last_error_date: info.last_error_date || null,
     last_error_message: info.last_error_message || ''

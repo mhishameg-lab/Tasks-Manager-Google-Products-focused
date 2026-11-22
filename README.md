@@ -53,7 +53,7 @@ Setup preserves existing records and refuses to overwrite an unexpected header. 
 2. Edit the Web App deployment, select **New version**, choose **Execute as: Me**, and set access to **Anyone** so Telegram can reach the endpoint.
 3. Save the deployed `/exec` URL in the existing `WEB_APP_URL` Script Property. Do not include the webhook secret in that property.
 4. Run `setTelegramWebhook()` from the editor, then run `getTelegramWebhookInfo()`.
-5. Confirm the webhook is configured, `pending_update_count` is reasonable, and `last_error_message` is empty.
+5. Confirm the webhook is configured, `allowed_updates` includes both `message` and `callback_query`, `pending_update_count` is reasonable, and `last_error_message` is empty.
 
 The registered webhook URL uses the existing secret. Treat deployment and execution logs as private. After code changes, deploy a new version; rerun `setTelegramWebhook()` if the deployment URL changes.
 
@@ -120,6 +120,7 @@ Routine times, reminder limits, and scoring weights are managed in the Settings 
 - **Missing tab or header:** run `setupDatabase()` again. It adds missing structure but will stop if an existing header does not match.
 - **Google Tasks sync fails:** verify Google Tasks Advanced Service v1 and its Cloud API are enabled, and that the configured task list is accessible.
 - **Telegram gets no updates:** verify the `/exec` deployment URL, redeploy if needed, run `setTelegramWebhook()`, and inspect the sanitized `getTelegramWebhookInfo()` result.
+- **A button click gets no chat reply:** deploy the latest code, run `setTelegramWebhook()`, and check Telegram_Actions for the callback result plus Apps Script **Executions** and System_Logs for errors. Button clicks are acknowledged immediately; the action result is sent as a separate chat message.
 - **Command is rejected:** use the Telegram account whose numeric user ID matches the existing `AUTHORIZED_TELEGRAM_USER_ID`.
 - **Email is not delivered:** authorize email access, check the script's effective-user email and sending quota, then inspect Email_Escalations, Sync_Logs, and System_Logs.
 - **Scheduled jobs do not run:** check Apps Script **Triggers** and **Executions**, run `runSystemHealthCheck()`, and reinstall with `installTriggers()` if appropriate.
