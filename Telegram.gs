@@ -188,6 +188,7 @@ function processTelegramCallback_(callbackQuery) {
   let response = '';
   let actionLogRow;
   let callbackAcknowledged = false;
+  let callbackErrorDetails = '';
 
   try {
     if (typeof isDuplicateCallback_ === 'function' &&
@@ -436,15 +437,19 @@ function processTelegramCallback_(callbackQuery) {
 
   } catch (error) {
     result = 'Failed';
-    logSystem_('ERROR', 'Telegram', 'Callback', 'Callback processing failed.', error);
-    response = '<b>Action could not be completed.</b>\n\nPlease try again. The issue has been logged.';
+    const errorLogId = logSystem_('ERROR', 'Telegram', 'Callback', 'Callback processing failed.', error);
+    callbackErrorDetails = `${errorLogId}: ${redactSensitiveText_(error && error.message || error)}`;
+    response =
+      '<b>Action could not be completed.</b>\n\n' +
+      'The failure was logged. Reference: ' +
+      `<code>${escapeHtml_(errorLogId)}</code>`;
     if (!callbackAcknowledged) {
       callbackAcknowledged = acknowledgeTelegramCallback_(callbackQuery.id, 'Action failed.');
     }
   }
 
   if (actionLogRow) {
-    updateTelegramAction_(actionLogRow, result, result === 'Failed' ? response : '');
+    updateTelegramAction_(actionLogRow, result, result === 'Failed' ? callbackErrorDetails : '');
   }
 
   if (response) sendTelegramMessage_(response, null, 'Button action');

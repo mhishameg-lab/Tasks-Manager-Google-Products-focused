@@ -1,9 +1,10 @@
 function logSystem_(severity, component, eventType, description, error, relatedRecordId) {
   const sheet = getSheet_(APP.SHEETS.SYSTEM_LOGS);
+  const logId = newId_('LOG');
   const errorMessage = error ? redactSensitiveText_(error.message || error) : '';
   const stack = error && error.stack ? redactSensitiveText_(error.stack) : '';
   const row = [
-    newId_('LOG'),
+    logId,
     now_(),
     severity || 'INFO',
     component || 'System',
@@ -15,6 +16,7 @@ function logSystem_(severity, component, eventType, description, error, relatedR
     stack
   ];
   sheet.getRange(sheet.getLastRow() + 1, 1, 1, row.length).setValues([row]);
+  return logId;
 }
 
 function logSync_(source, operation, result, errorDetails, retryCount, relatedRecordId) {
