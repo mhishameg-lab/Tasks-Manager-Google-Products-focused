@@ -13,13 +13,19 @@ function installTriggers() {
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(20000)) throw new Error('Could not acquire the trigger installation lock.');
   try {
+    const deliveryMode = getConfig_(APP.PROPERTIES.TELEGRAM_DELIVERY_MODE) || 'polling';
+    if (deliveryMode !== 'polling' && deliveryMode !== 'webhook') {
+      throw new Error(`Unsupported Telegram delivery mode: ${deliveryMode}`);
+    }
     ScriptApp.getProjectTriggers().forEach(trigger => {
       if (MANAGED_TRIGGER_HANDLERS.includes(trigger.getHandlerFunction())) {
         ScriptApp.deleteTrigger(trigger);
       }
     });
     const created = [];
-    created.push(ScriptApp.newTrigger('runTelegramPollingCycle').timeBased().everyMinutes(1).create());
+    if (deliveryMode === 'polling') {
+      created.push(ScriptApp.newTrigger('runTelegramPollingCycle').timeBased().everyMinutes(1).create());
+    }
     created.push(ScriptApp.newTrigger('syncGoogleTasks').timeBased().everyHours(1).create());
     created.push(ScriptApp.newTrigger('runReminderCycle').timeBased().everyMinutes(5).create());
     created.push(ScriptApp.newTrigger('runDailyReview').timeBased().atHour(23).nearMinute(30).everyDays(1).inTimezone(APP.TIMEZONE).create());
@@ -178,15 +184,36 @@ function runSystemHealthCheck() {
     requireConfig_(APP.PROPERTIES.TELEGRAM_BOT_TOKEN);
     requireConfig_(APP.PROPERTIES.TELEGRAM_CHAT_ID);
     requireConfig_(APP.PROPERTIES.AUTHORIZED_TELEGRAM_USER_ID);
+    const deliveryMode = getConfig_(APP.PROPERTIES.TELEGRAM_DELIVERY_MODE) || 'polling';
     const webhook = getTelegramWebhookInfo();
-    result.telegram = webhook.configured
-      ? 'Webhook still configured; run enableTelegramPolling()'
-      : 'OK — polling mode';
+    const hasPollingTrigger = ScriptApp.getProjectTriggers().some(trigger =>
+      trigger.getHandlerFunction() === 'runTelegramPollingCycle'
+    );
+    if (deliveryMode === 'webhook') {
+      requireConfig_(APP.PROPERTIES.TELEGRAM_WEBHOOK_RELAY_URL);
+      requireConfig_(APP.PROPERTIES.TELEGRAM_WEBHOOK_SECRET);
+      result.telegram = webhook.configured && webhook.matchesConfiguredRelay &&
+        webhook.receivesMessages && webhook.receivesCallbacks && !hasPollingTrigger
+        ? 'OK — webhook relay mode'
+        : 'Webhook relay is not correctly configured';
+    } else if (deliveryMode === 'polling') {
+      result.telegram = !webhook.configured && hasPollingTrigger
+        ? 'OK — polling mode'
+        : 'Polling mode is not correctly configured';
+    } else {
+      result.telegram = `Unsupported delivery mode: ${deliveryMode}`;
+    }
     result.email = Session.getEffectiveUser().getEmail() ? 'OK' : 'Recipient unavailable';
     result.emailQuota = MailApp.getRemainingDailyQuota();
 
     const triggers = ScriptApp.getProjectTriggers().map(trigger => trigger.getHandlerFunction());
-    const missingTriggers = MANAGED_TRIGGER_HANDLERS.filter(handler => !triggers.includes(handler));
+    const expectedTriggers = MANAGED_TRIGGER_HANDLERS.filter(handler =>
+      handler !== 'runTelegramPollingCycle' || deliveryMode === 'polling'
+    );
+    const missingTriggers = expectedTriggers.filter(handler => !triggers.includes(handler));
+    if (deliveryMode === 'webhook' && triggers.includes('runTelegramPollingCycle')) {
+      missingTriggers.push('runTelegramPollingCycle (unexpected in webhook mode)');
+    }
     result.triggers = missingTriggers.length ? `Missing: ${missingTriggers.join(', ')}` : 'OK';
 
     const cutoff = Date.now() - 24 * 60 * 60 * 1000;

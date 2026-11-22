@@ -115,7 +115,7 @@ function redactSensitiveText_(value) {
   let text = String(value || '')
     .replace(/bot\d+:[A-Za-z0-9_-]+/g, '[REDACTED]')
     .replace(/\b\d{6,}:[A-Za-z0-9_-]{20,}\b/g, '[REDACTED]');
-  ['TELEGRAM_BOT_TOKEN', 'WEBHOOK_SECRET'].forEach(key => {
+  ['TELEGRAM_BOT_TOKEN', 'WEBHOOK_SECRET', 'TELEGRAM_WEBHOOK_SECRET'].forEach(key => {
     const secret = getConfig_(key);
     if (secret) text = text.split(secret).join('[REDACTED]');
   });

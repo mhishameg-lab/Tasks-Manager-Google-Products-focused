@@ -567,8 +567,10 @@ function sendTomorrowPlan_() {
 function getTelegramWebhookInfo() {
   const info = telegramRequest_('getWebhookInfo', {});
   const allowedUpdates = info.allowed_updates || [];
+  const configuredRelayUrl = getConfig_(APP.PROPERTIES.TELEGRAM_WEBHOOK_RELAY_URL);
   return {
     configured: Boolean(info.url),
+    matchesConfiguredRelay: Boolean(configuredRelayUrl && info.url === configuredRelayUrl),
     allowed_updates: allowedUpdates,
     receivesMessages: allowedUpdates.includes('message'),
     receivesCallbacks: allowedUpdates.includes('callback_query'),
@@ -576,6 +578,41 @@ function getTelegramWebhookInfo() {
     last_error_date: info.last_error_date || null,
     last_error_message: redactSensitiveText_(info.last_error_message || '')
   };
+}
+
+function setTelegramWebhook() {
+  return withScriptLock_(() => {
+    const relayUrl = requireConfig_(APP.PROPERTIES.TELEGRAM_WEBHOOK_RELAY_URL);
+    const webhookSecret = requireConfig_(APP.PROPERTIES.TELEGRAM_WEBHOOK_SECRET);
+    if (!/^https:\/\/[^?#]+$/.test(relayUrl)) {
+      throw new Error('TELEGRAM_WEBHOOK_RELAY_URL must be an HTTPS URL without query parameters or fragments.');
+    }
+    if (!/^[A-Za-z0-9_-]{1,256}$/.test(webhookSecret)) {
+      throw new Error('TELEGRAM_WEBHOOK_SECRET must be 1–256 characters using only letters, numbers, underscores, or hyphens.');
+    }
+
+    telegramRequest_('setWebhook', {
+      url: relayUrl,
+      secret_token: webhookSecret,
+      allowed_updates: ['message', 'callback_query']
+    });
+
+    let pollingTriggersRemoved = 0;
+    ScriptApp.getProjectTriggers().forEach(trigger => {
+      if (trigger.getHandlerFunction() === 'runTelegramPollingCycle') {
+        ScriptApp.deleteTrigger(trigger);
+        pollingTriggersRemoved += 1;
+      }
+    });
+    PropertiesService.getScriptProperties().setProperty(APP.PROPERTIES.TELEGRAM_DELIVERY_MODE, 'webhook');
+    logSystem_(
+      'INFO',
+      'Telegram webhook',
+      'Enabled',
+      `Webhook relay enabled. Removed ${pollingTriggersRemoved} polling trigger(s).`
+    );
+    return { webhookEnabled: true, pollingTriggersRemoved: pollingTriggersRemoved };
+  });
 }
 
 function enableTelegramPolling() {
@@ -587,6 +624,7 @@ function enableTelegramPolling() {
     }
 
     PropertiesService.getScriptProperties().deleteProperty('TELEGRAM_UPDATE_OFFSET');
+    PropertiesService.getScriptProperties().setProperty(APP.PROPERTIES.TELEGRAM_DELIVERY_MODE, 'polling');
     let pollingTriggerCreated = false;
     const pollingTriggers = ScriptApp.getProjectTriggers().filter(trigger =>
       trigger.getHandlerFunction() === 'runTelegramPollingCycle'
